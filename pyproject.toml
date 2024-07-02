@@ -27,6 +27,7 @@ dependencies = [
     "aio-pika ~= 9.3.1",
     "omotes-sdk-protocol ~= 0.0.8",
     "celery ~= 5.3.6",
+    "typing-extensions ~= 4.11.0"
     #"streamcapture ~= 1.2.3", TODO: See #4, this is reenabled once streamcapture removes AGPL dependency
 ]
 
@@ -69,7 +70,7 @@ requires = [
 enabled = true
 
 [tool.pytest.ini_options]
-addopts = "--cov=omotes_sdk --cov-report html --cov-report term-missing --cov-fail-under 25"
+addopts = "--cov=omotes_sdk --cov-report html --cov-report term-missing --cov-fail-under 55"
 
 [tool.coverage.run]
 source = ["src"]

@@ -1,6 +1,6 @@
 import unittest
 
-from omotes_sdk.workflow_type import WorkflowType
+from omotes_sdk.workflow_type import WorkflowType, WorkflowTypeManager
 
 
 class WorkflowTypeTest(unittest.TestCase):
@@ -49,3 +49,44 @@ class WorkflowTypeTest(unittest.TestCase):
 
         # Assert
         self.assertNotEqual(hash_1, hash_2)
+
+    def test__from_json_config_file__happy(self) -> None:
+        # Arrange
+        workflow_json_file = "./unit_test/test_config/workflow_config_happy.json"
+
+        # Act
+        workflow_type_manager = WorkflowTypeManager.from_json_config_file(workflow_json_file)
+
+        # Assert
+        self.assertEqual(len(workflow_type_manager.get_all_workflows()), 2)
+
+    def test__from_json_config_file__integer_minimum_as_float(self) -> None:
+        # Arrange
+        workflow_json_file = "./unit_test/test_config/workflow_config_int_min_as_float.json"
+
+        # Act / Assert
+        with self.assertRaises(TypeError):
+            WorkflowTypeManager.from_json_config_file(workflow_json_file)
+
+    def test__to_pb_message__happy(self) -> None:
+        # Arrange
+        workflow_json_file = "./unit_test/test_config/workflow_config_happy.json"
+
+        # Act
+        workflow_type_manager = WorkflowTypeManager.from_json_config_file(workflow_json_file)
+        pb_message = workflow_type_manager.to_pb_message()
+
+        # Assert
+        self.assertEqual(pb_message.workflows[0].type_name, "workflow_1")
+
+    def test__from_pb_message__happy(self) -> None:
+        # Arrange
+        workflow_json_file = "./unit_test/test_config/workflow_config_happy.json"
+
+        # Act
+        workflow_type_manager = WorkflowTypeManager.from_json_config_file(workflow_json_file)
+        pb_message = workflow_type_manager.to_pb_message()
+        workflow_type_manager_from_pb = WorkflowTypeManager.from_pb_message(pb_message)
+
+        # Assert
+        self.assertEqual(len(workflow_type_manager_from_pb.get_all_workflows()), 2)

@@ -10,6 +10,7 @@ from omotes_sdk_protocol.job_pb2 import (
     JobResult,
     JobCancel,
 )
+from omotes_sdk_protocol.workflow_pb2 import RequestAvailableWorkflows
 from omotes_sdk.internal.common.broker_interface import BrokerInterface
 from omotes_sdk.config import RabbitMQConfig
 from omotes_sdk.job import Job
@@ -56,7 +57,7 @@ class JobSubmissionCallbackHandler:
 
 @dataclass
 class JobCancellationHandler:
-    """Handler to setup callback for receiving job cancellations."""
+    """Handler to set up callback for receiving job cancellations."""
 
     callback_on_cancel_job: Callable[[JobCancel], None]
     """Callback to call when a cancellation is received."""
@@ -70,6 +71,24 @@ class JobCancellationHandler:
         cancelled_job.ParseFromString(message)
 
         self.callback_on_cancel_job(cancelled_job)
+
+
+@dataclass
+class RequestWorkflowsHandler:
+    """Handler to set up callback for receiving available work flows requests."""
+
+    callback_on_request_workflows: Callable[[RequestAvailableWorkflows], None]
+    """Callback to call when a request work flows is received."""
+
+    def callback_on_request_workflows_wrapped(self, message: bytes) -> None:
+        """Prepare the `RequestAvailableWorkflows` message before passing them to the callback.
+
+        :param message: Serialized AMQP message containing a request work flow.
+        """
+        request_available_workflows = RequestAvailableWorkflows()
+        request_available_workflows.ParseFromString(message)
+
+        self.callback_on_request_workflows(request_available_workflows)
 
 
 class OrchestratorInterface:
@@ -94,6 +113,10 @@ class OrchestratorInterface:
     def start(self) -> None:
         """Start the orchestrator interface."""
         self.broker_if.start()
+        self.connect_to_request_available_workflows(
+            callback_on_request_workflows=self.request_workflows_handler
+        )
+        self.send_available_workflows(self.workflow_type_manager)
 
     def stop(self) -> None:
         """Stop the orchestrator interface."""
@@ -126,6 +149,19 @@ class OrchestratorInterface:
             callback_on_message=callback_handler.callback_on_job_cancelled_wrapped,
         )
 
+    def connect_to_request_available_workflows(
+        self, callback_on_request_workflows: Callable[[RequestAvailableWorkflows], None]
+    ) -> None:
+        """Connect to the request available workflows queue.
+
+        :param callback_on_request_workflows: Callback to handle workflow updates.
+        """
+        callback_handler = RequestWorkflowsHandler(callback_on_request_workflows)
+        self.broker_if.add_queue_subscription(
+            OmotesQueueNames.request_available_workflows_queue_name(),
+            callback_on_message=callback_handler.callback_on_request_workflows_wrapped,
+        )
+
     def send_job_progress_update(self, job: Job, progress_update: JobProgressUpdate) -> None:
         """Send a job progress update to the SDK.
 
@@ -154,4 +190,23 @@ class OrchestratorInterface:
         """
         self.broker_if.send_message_to(
             OmotesQueueNames.job_results_queue_name(job), result.SerializeToString()
+        )
+
+    def request_workflows_handler(self, request_workflows: RequestAvailableWorkflows) -> None:
+        """When an available work flows request is received from the SDK.
+
+        :param request_workflows: Request available work flows.
+        """
+        logger.info("Received an available workflows request")
+        self.send_available_workflows(self.workflow_type_manager)
+
+    def send_available_workflows(self, workflow_type_manager: WorkflowTypeManager) -> None:
+        """Send the available workflows to the SDK.
+
+        :param workflow_type_manager: Job to which the result belongs.
+        """
+        work_type_manager_pb = workflow_type_manager.to_pb_message()
+        self.broker_if.send_message_to(
+            OmotesQueueNames.available_workflows_queue_name(),
+            work_type_manager_pb.SerializeToString(),
         )

@@ -1,4 +1,5 @@
 import logging
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import timedelta
@@ -14,6 +15,7 @@ from omotes_sdk_protocol.job_pb2 import (
     JobSubmission,
     JobCancel,
 )
+from omotes_sdk_protocol.workflow_pb2 import AvailableWorkflows, RequestAvailableWorkflows
 from omotes_sdk.job import Job
 from omotes_sdk.queue_names import OmotesQueueNames
 from omotes_sdk.types import ParamsDict
@@ -71,6 +73,12 @@ class JobSubmissionCallbackHandler:
             self.callback_on_status_update(self.job, status_update)
 
 
+class UndefinedWorkflowsException(Exception):
+    """Thrown if the workflows are needed but not defined yet."""
+
+    ...
+
+
 class UnknownWorkflowException(Exception):
     """Thrown if a job is submitted using an unknown workflow type."""
 
@@ -82,23 +90,34 @@ class OmotesInterface:
 
     broker_if: BrokerInterface
     """Interface to RabbitMQ broker."""
-    workflow_type_manager: WorkflowTypeManager
-    """Manager of all possible workflows."""
+    workflow_type_manager: WorkflowTypeManager | None
+    """All available workflow types."""
+    _workflow_config_received: threading.Event
+    """Event triggered when workflow configuration is received."""
 
-    def __init__(self, rabbitmq_config: RabbitMQConfig, possible_workflows: WorkflowTypeManager):
+    def __init__(
+        self,
+        rabbitmq_config: RabbitMQConfig,
+    ):
         """Create the OMOTES interface.
 
         NOTE: Needs to be started separately.
 
         :param rabbitmq_config: RabbitMQ configuration how to connect to OMOTES.
-        :param possible_workflows: Container for all workflows which are expected to exist.
         """
         self.broker_if = BrokerInterface(rabbitmq_config)
-        self.workflow_type_manager = possible_workflows
+        self.workflow_type_manager = None
+        self._workflow_config_received = threading.Event()
 
     def start(self) -> None:
-        """Start any other interfaces."""
+        """Start any other interfaces and request available workflows."""
         self.broker_if.start()
+        self.connect_to_available_workflows_updates()
+        self.request_available_workflows()
+
+        while not self._workflow_config_received.is_set():
+            logger.info("Waiting for workflow definitions to be received from the orchestrator...")
+            self._workflow_config_received.wait(timeout=5)
 
     def stop(self) -> None:
         """Stop any other interfaces."""
@@ -198,7 +217,9 @@ class OmotesInterface:
         :return: The job handle which is created. This object needs to be saved persistently by the
             program using this SDK in order to resume listening to jobs in progress after a restart.
         """
-        if not self.workflow_type_manager.workflow_exists(workflow_type):
+        if not self.workflow_type_manager or not self.workflow_type_manager.workflow_exists(
+            workflow_type
+        ):
             raise UnknownWorkflowException()
 
         job = Job(id=uuid.uuid4(), workflow_type=workflow_type)
@@ -243,3 +264,36 @@ class OmotesInterface:
         self.broker_if.send_message_to(
             OmotesQueueNames.job_cancel_queue_name(), message=cancel_msg.SerializeToString()
         )
+
+    def connect_to_available_workflows_updates(self) -> None:
+        """Connect to updates of the available workflows."""
+        self.broker_if.add_queue_subscription(
+            queue_name=OmotesQueueNames.available_workflows_queue_name(),
+            callback_on_message=self.callback_on_update_available_workflows,
+        )
+
+    def callback_on_update_available_workflows(self, message: bytes) -> None:
+        """Parse a serialized AvailableWorkflows message and update workflow type manager.
+
+        :param message: Serialized message.
+        """
+        available_workflows_pb = AvailableWorkflows()
+        available_workflows_pb.ParseFromString(message)
+        self.workflow_type_manager = WorkflowTypeManager.from_pb_message(available_workflows_pb)
+        self._workflow_config_received.set()
+        logger.info("Updated the available workflows")
+
+    def request_available_workflows(self) -> None:
+        """Request the available workflows from the orchestrator."""
+        request_available_workflows_pb = RequestAvailableWorkflows()
+        self.broker_if.send_message_to(
+            OmotesQueueNames.request_available_workflows_queue_name(),
+            request_available_workflows_pb.SerializeToString(),
+        )
+
+    def get_workflow_type_manager(self) -> WorkflowTypeManager:
+        """Get the available workflows."""
+        if self.workflow_type_manager:
+            return self.workflow_type_manager
+        else:
+            raise UndefinedWorkflowsException()

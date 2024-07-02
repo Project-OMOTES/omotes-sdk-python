@@ -48,3 +48,19 @@ class OmotesQueueNames:
         :return: The queue name.
         """
         return "job_cancellations"
+
+    @staticmethod
+    def available_workflows_queue_name() -> str:
+        """Generate the available work flows queue name.
+
+        :return: The queue name.
+        """
+        return "available_workflows"
+
+    @staticmethod
+    def request_available_workflows_queue_name() -> str:
+        """Generate the request available work flows queue name.
+
+        :return: The queue name.
+        """
+        return "request_available_workflows"
