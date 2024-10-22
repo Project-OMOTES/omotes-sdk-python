@@ -82,11 +82,3 @@ class OmotesQueueNames:
         :return: The queue name.
         """
         return "request_available_workflows"
-
-    @staticmethod
-    def job_result_dead_letter_queue_name() -> str:
-        """Generate the job result dead letter queue name.
-
-        :return: The queue name.
-        """
-        return "job_result_message_dlq"

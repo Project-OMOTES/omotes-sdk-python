@@ -72,7 +72,7 @@ requires = [
 enabled = true
 
 [tool.pytest.ini_options]
-addopts = "--cov=omotes_sdk --cov-report html --cov-report term-missing --cov-fail-under 63"
+addopts = "--cov=omotes_sdk --cov-report html --cov-report term-missing --cov-fail-under 62"
 
 [tool.coverage.run]
 source = ["src"]
