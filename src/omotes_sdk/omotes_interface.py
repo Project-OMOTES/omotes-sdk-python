@@ -115,7 +115,7 @@ class OmotesInterface:
         self,
         rabbitmq_config: RabbitMQConfig,
         client_id: str,
-        timeout_on_initial_workflow_definitions: timedelta = timedelta(minutes=1),
+        timeout_on_initial_workflow_definitions: timedelta = timedelta(minutes=1),  # noqa: B008
     ):
         """Create the OMOTES interface.
 

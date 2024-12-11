@@ -1,6 +1,6 @@
 [project]
 name = "omotes-sdk-python"
-requires-python = ">=3.8.1"
+requires-python = ">=3.9"
 dynamic = ["version"]
 authors = [
     { name = "Sebastiaan la Fleur", email = "sebastiaan.lafleur@tno.nl" },
@@ -35,20 +35,23 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pip-tools~=7.3.0",
-    "setuptools ~= 69.0.3",
-    "black ~= 22.1.0",
-    "flake8 ~= 6.1.0",
-    "Flake8-pyproject ~= 1.2.3",
+    "setuptools ~= 75.6.0",
+    "wheel ~= 0.45.1",
+    "setuptools-git-versioning >= 2.0, < 3",
+    "black ~= 24.10.0",
+    "flake8 == 7.1.1",
+    "flake8-pyproject ~= 1.2.3",
     "flake8-docstrings ~= 1.7.0",
-    "flake8-quotes ~= 3.3.2",
-    "pytest ~=7.3.1",
-    "pytest-cov ~=4.0.0",
-    "mypy ~= 1.8.0",
-    "isort ~= 5.13.2",
-    "build ~= 1.0.3",
+    "flake8-quotes ~= 3.4.0",
+    "flake8-bugbear ~= 24.10.31",
+    "flake8-mock ~= 0.4",
+    "flake8-tuple ~= 0.4.1",
+    "pytest ~= 8.3.4",
+    "pytest-cov ~= 6.0.0",
+    "mypy ~= 1.13.0",
+    "isort == 5.13.2",
+    "build ~= 1.2.2",
     "mypy-protobuf ~= 3.5.0",
-    "setuptools-git-versioning < 2",
 ]
 
 [project.urls]
@@ -60,9 +63,9 @@ changelog = "https://github.com/Nieuwe-Warmte-Nu/omotes-sdk-python/blob/main/CHA
 [build-system]
 build-backend = "setuptools.build_meta"
 requires = [
-    "setuptools ~= 69.0.3",
-    "wheel ~= 0.40.0",
-    "setuptools-git-versioning<2",
+    "setuptools ~= 75.6.0",
+    "wheel ~= 0.45.1",
+    "setuptools-git-versioning >= 2.0, < 3",
 ]
 
 [tool.setuptools.package-data]
@@ -70,6 +73,7 @@ requires = [
 
 [tool.setuptools-git-versioning]
 enabled = true
+starting_version = "0.0.1"
 
 [tool.pytest.ini_options]
 addopts = "--cov=omotes_sdk --cov-report html --cov-report term-missing --cov-fail-under 62"
