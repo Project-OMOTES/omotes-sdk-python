@@ -55,7 +55,6 @@ class OmotesQueueNames:
         """
         return "job_deletions"
 
-
     @staticmethod
     def available_workflows_routing_key() -> str:
         """Generate the available work flows routing key.

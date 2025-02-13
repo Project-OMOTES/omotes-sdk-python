@@ -376,14 +376,15 @@ class OmotesInterface:
         """Delete a job and all of its resources.
 
         This will delete the job regardless of its current state. If it is running, it will be
-        cancelled. If the job produced any timeseries data, it will be deleted (after a waiting
-        period).
+        cancelled. If the job produced any timeseries data, it will be deleted eventually.
 
         Developers note:
         If the jobs is  successfully cancelled or not will be sent as a job status update through
         the `callback_on_status_update` handler. This method will not disconnect from the submitted
         job events. This will need to be done separately using `disconnect_from_submitted_job`
         after receiving the job status update.
+        Deletion of the timeseries is done by the orchestrator. See:
+        https://github.com/Project-OMOTES/architecture-documentation/blob/main/Feature_Time_Series_DB_Cleanup/Feature_Time_Series_DB_Cleanup.md
 
         :param job: The job to delete.
         """
