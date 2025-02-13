@@ -373,12 +373,17 @@ class OmotesInterface:
         return job
 
     def delete_job(self, job: Job) -> None:
-        """Delete a job.
+        """Delete a job and all of its resources.
 
-        If the jobs is cancelled or not will be sent as a job status update through the
-        `callback_on_status_update` handler. This method will not disconnect from the submitted job
-        events. This will need to be done separately using `disconnect_from_submitted_job`.
-        Time series data, if present, will be deleted (after a waiting period).
+        This will delete the job regardless of its current state. If it is running, it will be
+        cancelled. If the job produced any timeseries data, it will be deleted (after a waiting
+        period).
+
+        Developers note:
+        If the jobs is  successfully cancelled or not will be sent as a job status update through
+        the `callback_on_status_update` handler. This method will not disconnect from the submitted
+        job events. This will need to be done separately using `disconnect_from_submitted_job`
+        after receiving the job status update.
 
         :param job: The job to delete.
         """
