@@ -48,12 +48,12 @@ class OmotesQueueNames:
         return f"jobs.{job_uuid}.status"
 
     @staticmethod
-    def job_cancel_queue_name() -> str:
-        """Generate the job cancellation queue name.
+    def job_delete_queue_name() -> str:
+        """Generate the job deletion queue name.
 
         :return: The queue name.
         """
-        return "job_cancellations"
+        return "job_deletions"
 
     @staticmethod
     def available_workflows_routing_key() -> str:

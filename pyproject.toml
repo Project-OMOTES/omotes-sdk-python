@@ -6,7 +6,7 @@ authors = [
     { name = "Sebastiaan la Fleur", email = "sebastiaan.lafleur@tno.nl" },
     { name = "Mark Vrijlandt", email = "mark.vrijlandt@tno.nl" },
 ]
-description = "Python implementation of the OMOTES SDK through jobs which may be submitted, receive status updates for submitted jobs or cancel submitted jobs."
+description = "Python implementation of the OMOTES SDK through jobs which may be submitted, receive status updates for submitted jobs or delete submitted jobs."
 readme = "README.md"
 license = {file = "LICENSE"}
 classifiers = [
@@ -25,7 +25,7 @@ classifiers = [
 
 dependencies = [
     "aio-pika ~= 9.4",
-    "omotes-sdk-protocol ~= 0.1",
+    "omotes-sdk-protocol ~= 0.1,>=0.1.15",
     "pyesdl ~= 24.2",
     "pamqp ~= 3.3",
     "celery ~= 5.3",
