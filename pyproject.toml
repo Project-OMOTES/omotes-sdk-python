@@ -25,7 +25,7 @@ classifiers = [
 
 dependencies = [
     "aio-pika ~= 9.4",
-    "omotes-sdk-protocol ~= 0.1",
+    "omotes-sdk-protocol ~= 0.1,>=0.1.15",
     "pyesdl ~= 24.2",
     "pamqp ~= 3.3",
     "celery ~= 5.3",
