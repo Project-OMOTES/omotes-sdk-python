@@ -1,9 +1,10 @@
 import json
 import logging
+import pprint
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import List, Optional, Dict, Union, Any, Type, TypeVar, cast
+from typing import List, Optional, Dict, Union, Any, Type, TypeVar, cast, Literal
 from typing_extensions import Self, override
 
 from omotes_sdk_protocol.workflow_pb2 import (
@@ -17,6 +18,7 @@ from omotes_sdk_protocol.workflow_pb2 import (
     FloatParameter as FloatParameterPb,
     DateTimeParameter as DateTimeParameterPb,
     DurationParameter as DurationParameterPb,
+    ParameterRelation,
 )
 from google.protobuf.struct_pb2 import Struct
 
@@ -842,6 +844,92 @@ PB_CLASS_TO_PARAMETER_CLASS: Dict[
     for parameter in WorkflowParameter.__subclasses__()
 }
 
+List["ParamsDictValues"], "ParamsDict", None, float, int, str, bool, datetime, timedelta
+
+
+def check_parameter_relation(
+    value1: ParamsDictValues, value2: ParamsDictValues, check: ParameterRelation
+) -> Literal[True]:
+    """Check if the values adhere to the parameter relation.
+
+    :param value1: The left-hand value to be checked.
+    :param value2: The right-hand value to the checked.
+    :param check: The parameter relation to check between `value1` and `value2`
+    :return: Always true if the function returns noting the parameter relation is adhered to.
+    :raises RuntimeError: In case the parameter relation is not adhered to.
+    """
+    supported_types = (float, int, datetime, timedelta)
+    if not isinstance(value1, supported_types) or not isinstance(value2, supported_types):
+        raise RuntimeError(
+            f"Values {value1}, {value2} are of a type that are not supported "
+            f"by parameter relation {check}"
+        )
+
+    same_type_required = (datetime, timedelta)
+    if (isinstance(value1, same_type_required) or isinstance(value2, same_type_required)) and type(
+        value1
+    ) is not type(value2):
+        raise RuntimeError(
+            f"Values {value1}, {value2} are required to be of the same type to be"
+            f"supported by parameter relation {check}"
+        )
+
+    if check.relation == ParameterRelation.RelationType.GREATER:
+        result = value1 > value2  # type: ignore[operator]
+    elif check.relation == ParameterRelation.RelationType.GREATER_OR_EQ:
+        result = value1 >= value2  # type: ignore[operator]
+    elif check.relation == ParameterRelation.RelationType.SMALLER:
+        result = value1 < value2  # type: ignore[operator]
+    elif check.relation == ParameterRelation.RelationType.SMALLER_OR_EQ:
+        result = value1 <= value2  # type: ignore[operator]
+    else:
+        raise RuntimeError("Unknown parameter relation. Please implement.")
+
+    if not result:
+        raise RuntimeError(
+            f"Check failed for relation {check.relation} with "
+            f"{check.key_1}: {value1} and  {check.key_2}: {value2}"
+        )
+    return result
+
+
+def convert_str_to_parameter_relation(
+    parameter_relation_name: str,
+) -> ParameterRelation.RelationType.ValueType:
+    """Translate the name of a parameter relation to the relevant enum.
+
+    :param parameter_relation_name: String name of the parameter relation.
+    :return: The parameter relation as an enum value of `ParameterRelation.RelationType`
+    :raises RuntimeError: In case the parameter relation name is unknown.
+    """
+    normalized_relation_name = parameter_relation_name.lower()
+    if normalized_relation_name == "greater":
+        result = ParameterRelation.RelationType.GREATER
+    elif normalized_relation_name == "greater_or_eq":
+        result = ParameterRelation.RelationType.GREATER_OR_EQ
+    elif normalized_relation_name == "smaller":
+        result = ParameterRelation.RelationType.SMALLER
+    elif normalized_relation_name == "smaller_or_eq":
+        result = ParameterRelation.RelationType.SMALLER_OR_EQ
+    else:
+        raise RuntimeError(f"Unknown parameter relation name {parameter_relation_name}")
+
+    return result
+
+
+def convert_json_to_parameter_relation(parameter_relation_json: dict) -> ParameterRelation:
+    """Convert a json document containing a parameter relation definition to a `ParameterRelation`.
+
+    :param parameter_relation_json: The json document which contains the parameter relation
+        definition.
+    :return: The converted parameter relation definition.
+    """
+    return ParameterRelation(
+        key_1=parameter_relation_json["key_1"],
+        key_2=parameter_relation_json["key_2"],
+        relation=convert_str_to_parameter_relation(parameter_relation_json["relation"]),
+    )
+
 
 @dataclass(eq=True, frozen=True)
 class WorkflowType:
@@ -855,6 +943,9 @@ class WorkflowType:
         default=None, hash=False, compare=False
     )
     """Optional list of non-ESDL workflow parameters."""
+    parameter_relations: Optional[List[ParameterRelation]] = field(
+        default=None, hash=False, compare=False
+    )
 
 
 class WorkflowTypeManager:
@@ -903,6 +994,7 @@ class WorkflowTypeManager:
             workflow_pb = Workflow(
                 type_name=_workflow.workflow_type_name,
                 type_description=_workflow.workflow_type_description_name,
+                relations=_workflow.parameter_relations,
             )
             if _workflow.workflow_parameters:
                 for _parameter in _workflow.workflow_parameters:
@@ -938,6 +1030,7 @@ class WorkflowTypeManager:
         :return: WorkflowTypeManager instance.
         """
         workflow_types = []
+        workflow_pb: Workflow
         for workflow_pb in available_workflows_pb.workflows:
             workflow_parameters: List[WorkflowParameter] = []
             for parameter_pb in workflow_pb.parameters:
@@ -956,11 +1049,18 @@ class WorkflowTypeManager:
                     workflow_parameters.append(parameter)
                 else:
                     raise RuntimeError(f"Unknown PB class {type(one_of_parameter_type_pb)}")
+
+            if workflow_pb.relations is None:
+                parameter_relations = []
+            else:
+                parameter_relations = list(workflow_pb.relations)
+
             workflow_types.append(
                 WorkflowType(
                     workflow_type_name=workflow_pb.type_name,
                     workflow_type_description_name=workflow_pb.type_description,
                     workflow_parameters=workflow_parameters,
+                    parameter_relations=parameter_relations,
                 )
             )
         return cls(workflow_types)
@@ -974,26 +1074,31 @@ class WorkflowTypeManager:
         """
         with open(json_config_file_path, "r") as f:
             json_config_dict = json.load(f)
+        logger.debug("Loading workflow config: %s", pprint.pformat(json_config_dict))
         workflow_types = []
         for _workflow in json_config_dict:
             workflow_parameters = []
-            if "workflow_parameters" in _workflow:
-                for parameter_config in _workflow["workflow_parameters"]:
-                    parameter_type_name = parameter_config["parameter_type"]
-                    parameter_config.pop("parameter_type")
+            for parameter_config in _workflow.get("workflow_parameters", []):
+                parameter_type_name = parameter_config["parameter_type"]
+                parameter_config.pop("parameter_type")
 
-                    for parameter_type_class in PARAMETER_CLASS_TO_PB_CLASS:
-                        if parameter_type_class.type_name == parameter_type_name:
-                            workflow_parameters.append(
-                                parameter_type_class.from_json_config(parameter_config)
-                            )
-                            break
+                for parameter_type_class in PARAMETER_CLASS_TO_PB_CLASS:
+                    if parameter_type_class.type_name == parameter_type_name:
+                        workflow_parameters.append(
+                            parameter_type_class.from_json_config(parameter_config)
+                        )
+                        break
+
+            parameter_relations = []
+            for relation_json in _workflow.get("parameter_relations", []):
+                parameter_relations.append(convert_json_to_parameter_relation(relation_json))
 
             workflow_types.append(
                 WorkflowType(
                     workflow_type_name=_workflow["workflow_type_name"],
                     workflow_type_description_name=_workflow["workflow_type_description_name"],
                     workflow_parameters=workflow_parameters,
+                    parameter_relations=parameter_relations,
                 )
             )
         return cls(workflow_types)
@@ -1022,6 +1127,13 @@ def convert_params_dict_to_struct(workflow: WorkflowType, params_dict: ParamsDic
             )
 
         normalized_dict[parameter.key_name] = parameter.to_pb_value(param_value)
+
+    if workflow.parameter_relations is not None:
+        for relation in workflow.parameter_relations:
+            value1 = params_dict[relation.key_1]
+            value2 = params_dict[relation.key_2]
+
+            check_parameter_relation(value1, value2, relation)
 
     params_dict_struct = Struct()
     params_dict_struct.update(normalized_dict)
