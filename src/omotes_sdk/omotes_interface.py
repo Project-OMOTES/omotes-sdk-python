@@ -303,6 +303,7 @@ class OmotesInterface:
         auto_disconnect_on_result: bool,
         job_reference: Optional[str] = None,
         auto_cleanup_after_ttl: Optional[timedelta] = JOB_QUEUES_TTL,
+        job_priority: JobSubmission.JobPriority | int = JobSubmission.JobPriority.LOW,
     ) -> Job:
         """Submit a new job and connect to progress and status updates and the job result.
 
@@ -362,6 +363,7 @@ class OmotesInterface:
             esdl=esdl,
             params_dict=convert_params_dict_to_struct(workflow_type, params_dict),
             job_reference=job_reference,
+            job_priority=job_priority,  # type: ignore [arg-type]
         )
         self.broker_if.send_message_to(
             exchange_name=OmotesQueueNames.omotes_exchange_name(),
