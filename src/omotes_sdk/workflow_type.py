@@ -973,19 +973,7 @@ def convert_str_to_parameter_relation(
     :return: The parameter constraint as an enum value of `Constraint.RelationType`
     :raises RuntimeError: In case the parameter constraint name is unknown.
     """
-    normalized_constraint_name = parameter_constraint_name.lower()
-    if normalized_constraint_name == "greater":
-        result = WorkflowParameterPb.Constraint.RelationType.GREATER
-    elif normalized_constraint_name == "greater_or_eq":
-        result = WorkflowParameterPb.Constraint.RelationType.GREATER_OR_EQ
-    elif normalized_constraint_name == "smaller":
-        result = WorkflowParameterPb.Constraint.RelationType.SMALLER
-    elif normalized_constraint_name == "smaller_or_eq":
-        result = WorkflowParameterPb.Constraint.RelationType.SMALLER_OR_EQ
-    else:
-        raise RuntimeError(f"Unknown parameter constraint name {parameter_constraint_name}")
-
-    return result
+    return WorkflowParameterPb.Constraint.RelationType.Value(parameter_constraint_name.upper())
 
 
 def convert_json_to_parameter_constraint(
