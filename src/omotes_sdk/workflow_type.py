@@ -135,9 +135,11 @@ class WorkflowParameter(ABC):
         """
         ...  # pragma: no cover
 
-    @staticmethod
     def check_parameter_constraint(
-        value1: ParamsDictValues, value2: ParamsDictValues, check: WorkflowParameterPb.Constraint
+        self,
+        value1: ParamsDictValues,
+        value2: ParamsDictValues,
+        check: WorkflowParameterPb.Constraint,
     ) -> Literal[True]:
         """Check if the values adhere to the parameter constraint.
 
@@ -177,7 +179,7 @@ class WorkflowParameter(ABC):
         if not result:
             raise RuntimeError(
                 f"Check failed for constraint {check.relation} with "
-                f"{check.key_1}: {value1} and  {check.key_2}: {value2}"
+                f"{self.key_name}: {value1} and  {check.other_key_name}: {value2}"
             )
         return result
 
@@ -247,7 +249,7 @@ class StringParameter(WorkflowParameter):
             description=parameter_pb.description,
             default=parameter_type_pb.default,
             enum_options=[],
-            constraints=parameter_pb.constraints,
+            constraints=list(parameter_pb.constraints),
         )
         for enum_option_pb in parameter_type_pb.enum_options:
             if parameter_type_pb.enum_options and parameter.enum_options is not None:
@@ -378,7 +380,7 @@ class BooleanParameter(WorkflowParameter):
             title=parameter_pb.title,
             description=parameter_pb.description,
             default=parameter_type_pb.default,
-            constraints=parameter_pb.constraints,
+            constraints=list(parameter_pb.constraints),
         )
 
     @classmethod
@@ -489,7 +491,7 @@ class IntegerParameter(WorkflowParameter):
             maximum=(
                 parameter_type_pb.maximum if parameter_type_pb.HasField("maximum") else None
             ),  # protobuf has '0' default value for int instead of None
-            constraints=parameter_pb.constraints,
+            constraints=list(parameter_pb.constraints),
         )
 
     @classmethod
@@ -612,7 +614,7 @@ class FloatParameter(WorkflowParameter):
             maximum=(
                 parameter_type_pb.maximum if parameter_type_pb.HasField("maximum") else None
             ),  # protobuf has '0' default value for int instead of None
-            constraints=parameter_pb.constraints,
+            constraints=list(parameter_pb.constraints),
         )
 
     @classmethod
@@ -733,7 +735,7 @@ class DateTimeParameter(WorkflowParameter):
             title=parameter_pb.title,
             description=parameter_pb.description,
             default=default,
-            constraints=parameter_pb.constraints,
+            constraints=list(parameter_pb.constraints),
         )
 
     @classmethod
@@ -860,7 +862,7 @@ class DurationParameter(WorkflowParameter):
                 if parameter_type_pb.HasField("maximum")
                 else None
             ),
-            constraints=parameter_pb.constraints,
+            constraints=list(parameter_pb.constraints),
         )
 
     @classmethod
@@ -1184,7 +1186,7 @@ def convert_params_dict_to_struct(workflow: WorkflowType, params_dict: ParamsDic
         normalized_dict[parameter.key_name] = parameter.to_pb_value(param_value)
 
         for constraint in parameter.constraints:
-            other_value = params_dict[constraint.key_2]
+            other_value = params_dict[constraint.other_key_name]
 
             parameter.check_parameter_constraint(param_value, other_value, constraint)
 
