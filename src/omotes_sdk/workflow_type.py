@@ -18,7 +18,6 @@ from omotes_sdk_protocol.workflow_pb2 import (
     FloatParameter as FloatParameterPb,
     DateTimeParameter as DateTimeParameterPb,
     DurationParameter as DurationParameterPb,
-    ParameterRelation,
 )
 from google.protobuf.struct_pb2 import Struct
 
@@ -51,6 +50,10 @@ class WorkflowParameter(ABC):
     """Optional description (displayed below the input field)."""
     type_name: str = ""
     """Parameter type name, set in child class."""
+    constraints: List[WorkflowParameterPb.Constraint] = field(
+        default_factory=list, hash=False, compare=False
+    )
+    """Optional list of non-ESDL workflow parameters."""
 
     @staticmethod
     @abstractmethod
@@ -132,6 +135,52 @@ class WorkflowParameter(ABC):
         """
         ...  # pragma: no cover
 
+    @staticmethod
+    def check_parameter_constraint(
+        value1: ParamsDictValues, value2: ParamsDictValues, check: WorkflowParameterPb.Constraint
+    ) -> Literal[True]:
+        """Check if the values adhere to the parameter constraint.
+
+        :param value1: The left-hand value to be checked.
+        :param value2: The right-hand value to the checked.
+        :param check: The parameter constraint to check between `value1` and `value2`
+        :return: Always true if the function returns noting the parameter constraint is adhered to.
+        :raises RuntimeError: In case the parameter constraint is not adhered to.
+        """
+        supported_types = (float, int, datetime, timedelta)
+        if not isinstance(value1, supported_types) or not isinstance(value2, supported_types):
+            raise RuntimeError(
+                f"Values {value1}, {value2} are of a type that are not supported "
+                f"by parameter constraint {check}"
+            )
+
+        same_type_required = (datetime, timedelta)
+        if (
+            isinstance(value1, same_type_required) or isinstance(value2, same_type_required)
+        ) and type(value1) is not type(value2):
+            raise RuntimeError(
+                f"Values {value1}, {value2} are required to be of the same type to be"
+                f"supported by parameter constraint {check}"
+            )
+
+        if check.relation == WorkflowParameterPb.Constraint.RelationType.GREATER:
+            result = value1 > value2  # type: ignore[operator]
+        elif check.relation == WorkflowParameterPb.Constraint.RelationType.GREATER_OR_EQ:
+            result = value1 >= value2  # type: ignore[operator]
+        elif check.relation == WorkflowParameterPb.Constraint.RelationType.SMALLER:
+            result = value1 < value2  # type: ignore[operator]
+        elif check.relation == WorkflowParameterPb.Constraint.RelationType.SMALLER_OR_EQ:
+            result = value1 <= value2  # type: ignore[operator]
+        else:
+            raise RuntimeError("Unknown parameter constraint. Please implement.")
+
+        if not result:
+            raise RuntimeError(
+                f"Check failed for constraint {check.relation} with "
+                f"{check.key_1}: {value1} and  {check.key_2}: {value2}"
+            )
+        return result
+
 
 @dataclass(eq=True, frozen=True)
 class StringEnumOption:
@@ -198,6 +247,7 @@ class StringParameter(WorkflowParameter):
             description=parameter_pb.description,
             default=parameter_type_pb.default,
             enum_options=[],
+            constraints=parameter_pb.constraints,
         )
         for enum_option_pb in parameter_type_pb.enum_options:
             if parameter_type_pb.enum_options and parameter.enum_options is not None:
@@ -222,6 +272,16 @@ class StringParameter(WorkflowParameter):
 
         if "enum_options" in json_config and not isinstance(json_config["enum_options"], List):
             raise TypeError("'enum_options' for StringParameter must be a 'list'")
+
+        if "constraints" in json_config:
+            if not isinstance(json_config["constraints"], list):
+                raise TypeError("'constraints' for StringParameter must be a 'list'")
+
+            parsed_constraints = [
+                convert_json_to_parameter_constraint(constraint)
+                for constraint in json_config["constraints"]
+            ]
+            json_config["constraints"] = parsed_constraints
 
         if "enum_options" in json_config:
             enum_options = []
@@ -318,6 +378,7 @@ class BooleanParameter(WorkflowParameter):
             title=parameter_pb.title,
             description=parameter_pb.description,
             default=parameter_type_pb.default,
+            constraints=parameter_pb.constraints,
         )
 
     @classmethod
@@ -333,6 +394,17 @@ class BooleanParameter(WorkflowParameter):
                 f"'default' for BooleanParameter must be in 'bool' format:"
                 f" '{json_config['default']}'"
             )
+
+        if "constraints" in json_config:
+            if not isinstance(json_config["constraints"], list):
+                raise TypeError("'constraints' for BooleanParameter must be a 'list'")
+
+            parsed_constraints = [
+                convert_json_to_parameter_constraint(constraint)
+                for constraint in json_config["constraints"]
+            ]
+            json_config["constraints"] = parsed_constraints
+
         return cls(**json_config)
 
     @staticmethod
@@ -417,6 +489,7 @@ class IntegerParameter(WorkflowParameter):
             maximum=(
                 parameter_type_pb.maximum if parameter_type_pb.HasField("maximum") else None
             ),  # protobuf has '0' default value for int instead of None
+            constraints=parameter_pb.constraints,
         )
 
     @classmethod
@@ -434,6 +507,17 @@ class IntegerParameter(WorkflowParameter):
                     f"'{int_param}' for IntegerParameter must be in 'int' format:"
                     f" '{json_config[int_param]}'"
                 )
+
+            if "constraints" in json_config:
+                if not isinstance(json_config["constraints"], list):
+                    raise TypeError("'constraints' for IntegerParameter must be a 'list'")
+
+                parsed_constraints = [
+                    convert_json_to_parameter_constraint(constraint)
+                    for constraint in json_config["constraints"]
+                ]
+                json_config["constraints"] = parsed_constraints
+
         return cls(**json_config)
 
     @staticmethod
@@ -528,6 +612,7 @@ class FloatParameter(WorkflowParameter):
             maximum=(
                 parameter_type_pb.maximum if parameter_type_pb.HasField("maximum") else None
             ),  # protobuf has '0' default value for int instead of None
+            constraints=parameter_pb.constraints,
         )
 
     @classmethod
@@ -549,6 +634,16 @@ class FloatParameter(WorkflowParameter):
                     f"'{float_param}' for FloatParameter must be in 'float' format:"
                     f" '{json_config[float_param]}'"
                 )
+
+        if "constraints" in json_config:
+            if not isinstance(json_config["constraints"], list):
+                raise TypeError("'constraints' for FloatParameter must be a 'list'")
+
+            parsed_constraints = [
+                convert_json_to_parameter_constraint(constraint)
+                for constraint in json_config["constraints"]
+            ]
+            json_config["constraints"] = parsed_constraints
 
         return cls(**json_config)
 
@@ -638,6 +733,7 @@ class DateTimeParameter(WorkflowParameter):
             title=parameter_pb.title,
             description=parameter_pb.description,
             default=default,
+            constraints=parameter_pb.constraints,
         )
 
     @classmethod
@@ -657,6 +753,16 @@ class DateTimeParameter(WorkflowParameter):
                     f" '{json_config['default']}'"
                 )
             json_config["default"] = default
+
+        if "constraints" in json_config:
+            if not isinstance(json_config["constraints"], list):
+                raise TypeError("'constraints' for DateTimeParameter must be a 'list'")
+
+            parsed_constraints = [
+                convert_json_to_parameter_constraint(constraint)
+                for constraint in json_config["constraints"]
+            ]
+            json_config["constraints"] = parsed_constraints
 
         return cls(**json_config)
 
@@ -754,6 +860,7 @@ class DurationParameter(WorkflowParameter):
                 if parameter_type_pb.HasField("maximum")
                 else None
             ),
+            constraints=parameter_pb.constraints,
         )
 
     @classmethod
@@ -780,6 +887,16 @@ class DurationParameter(WorkflowParameter):
                 )
             elif duration_param in json_config:
                 args[duration_param] = timedelta(seconds=json_config[duration_param])
+
+        if "constraints" in json_config:
+            if not isinstance(json_config["constraints"], list):
+                raise TypeError("'constraints' for StringParameter must be a 'list'")
+
+            parsed_constraints = [
+                convert_json_to_parameter_constraint(constraint)
+                for constraint in json_config["constraints"]
+            ]
+            args["constraints"] = parsed_constraints
 
         return cls(**args)
 
@@ -844,90 +961,43 @@ PB_CLASS_TO_PARAMETER_CLASS: Dict[
     for parameter in WorkflowParameter.__subclasses__()
 }
 
-List["ParamsDictValues"], "ParamsDict", None, float, int, str, bool, datetime, timedelta
-
-
-def check_parameter_relation(
-    value1: ParamsDictValues, value2: ParamsDictValues, check: ParameterRelation
-) -> Literal[True]:
-    """Check if the values adhere to the parameter relation.
-
-    :param value1: The left-hand value to be checked.
-    :param value2: The right-hand value to the checked.
-    :param check: The parameter relation to check between `value1` and `value2`
-    :return: Always true if the function returns noting the parameter relation is adhered to.
-    :raises RuntimeError: In case the parameter relation is not adhered to.
-    """
-    supported_types = (float, int, datetime, timedelta)
-    if not isinstance(value1, supported_types) or not isinstance(value2, supported_types):
-        raise RuntimeError(
-            f"Values {value1}, {value2} are of a type that are not supported "
-            f"by parameter relation {check}"
-        )
-
-    same_type_required = (datetime, timedelta)
-    if (isinstance(value1, same_type_required) or isinstance(value2, same_type_required)) and type(
-        value1
-    ) is not type(value2):
-        raise RuntimeError(
-            f"Values {value1}, {value2} are required to be of the same type to be"
-            f"supported by parameter relation {check}"
-        )
-
-    if check.relation == ParameterRelation.RelationType.GREATER:
-        result = value1 > value2  # type: ignore[operator]
-    elif check.relation == ParameterRelation.RelationType.GREATER_OR_EQ:
-        result = value1 >= value2  # type: ignore[operator]
-    elif check.relation == ParameterRelation.RelationType.SMALLER:
-        result = value1 < value2  # type: ignore[operator]
-    elif check.relation == ParameterRelation.RelationType.SMALLER_OR_EQ:
-        result = value1 <= value2  # type: ignore[operator]
-    else:
-        raise RuntimeError("Unknown parameter relation. Please implement.")
-
-    if not result:
-        raise RuntimeError(
-            f"Check failed for relation {check.relation} with "
-            f"{check.key_1}: {value1} and  {check.key_2}: {value2}"
-        )
-    return result
-
 
 def convert_str_to_parameter_relation(
-    parameter_relation_name: str,
-) -> ParameterRelation.RelationType.ValueType:
-    """Translate the name of a parameter relation to the relevant enum.
+    parameter_constraint_name: str,
+) -> WorkflowParameterPb.Constraint.RelationType.ValueType:
+    """Translate the name of a parameter constraint to the relevant enum.
 
-    :param parameter_relation_name: String name of the parameter relation.
-    :return: The parameter relation as an enum value of `ParameterRelation.RelationType`
-    :raises RuntimeError: In case the parameter relation name is unknown.
+    :param parameter_constraint_name: String name of the parameter constraint.
+    :return: The parameter constraint as an enum value of `Constraint.RelationType`
+    :raises RuntimeError: In case the parameter constraint name is unknown.
     """
-    normalized_relation_name = parameter_relation_name.lower()
-    if normalized_relation_name == "greater":
-        result = ParameterRelation.RelationType.GREATER
-    elif normalized_relation_name == "greater_or_eq":
-        result = ParameterRelation.RelationType.GREATER_OR_EQ
-    elif normalized_relation_name == "smaller":
-        result = ParameterRelation.RelationType.SMALLER
-    elif normalized_relation_name == "smaller_or_eq":
-        result = ParameterRelation.RelationType.SMALLER_OR_EQ
+    normalized_constraint_name = parameter_constraint_name.lower()
+    if normalized_constraint_name == "greater":
+        result = WorkflowParameterPb.Constraint.RelationType.GREATER
+    elif normalized_constraint_name == "greater_or_eq":
+        result = WorkflowParameterPb.Constraint.RelationType.GREATER_OR_EQ
+    elif normalized_constraint_name == "smaller":
+        result = WorkflowParameterPb.Constraint.RelationType.SMALLER
+    elif normalized_constraint_name == "smaller_or_eq":
+        result = WorkflowParameterPb.Constraint.RelationType.SMALLER_OR_EQ
     else:
-        raise RuntimeError(f"Unknown parameter relation name {parameter_relation_name}")
+        raise RuntimeError(f"Unknown parameter constraint name {parameter_constraint_name}")
 
     return result
 
 
-def convert_json_to_parameter_relation(parameter_relation_json: dict) -> ParameterRelation:
-    """Convert a json document containing a parameter relation definition to a `ParameterRelation`.
+def convert_json_to_parameter_constraint(
+    parameter_constraint_json: dict,
+) -> WorkflowParameterPb.Constraint:
+    """Convert a json document containing a parameter constraint definition to a `Constraint`.
 
-    :param parameter_relation_json: The json document which contains the parameter relation
+    :param parameter_constraint_json: The json document which contains the parameter constraint
         definition.
-    :return: The converted parameter relation definition.
+    :return: The converted parameter constraint definition.
     """
-    return ParameterRelation(
-        key_1=parameter_relation_json["key_1"],
-        key_2=parameter_relation_json["key_2"],
-        relation=convert_str_to_parameter_relation(parameter_relation_json["relation"]),
+    return WorkflowParameterPb.Constraint(
+        other_key_name=parameter_constraint_json["other_key_name"],
+        relation=convert_str_to_parameter_relation(parameter_constraint_json["relation"]),
     )
 
 
@@ -940,10 +1010,6 @@ class WorkflowType:
     workflow_type_description_name: str = field(hash=False, compare=False)
     """Human-readable name for the workflow."""
     workflow_parameters: Optional[List[WorkflowParameter]] = field(
-        default=None, hash=False, compare=False
-    )
-    """Optional list of non-ESDL workflow parameters."""
-    parameter_relations: Optional[List[ParameterRelation]] = field(
         default=None, hash=False, compare=False
     )
 
@@ -994,7 +1060,6 @@ class WorkflowTypeManager:
             workflow_pb = Workflow(
                 type_name=_workflow.workflow_type_name,
                 type_description=_workflow.workflow_type_description_name,
-                relations=_workflow.parameter_relations,
             )
             if _workflow.workflow_parameters:
                 for _parameter in _workflow.workflow_parameters:
@@ -1002,6 +1067,7 @@ class WorkflowTypeManager:
                         key_name=_parameter.key_name,
                         title=_parameter.title,
                         description=_parameter.description,
+                        constraints=_parameter.constraints,
                     )
                     parameter_type_to_pb_type_oneof = {
                         StringParameter: parameter_pb.string_parameter,
@@ -1050,17 +1116,11 @@ class WorkflowTypeManager:
                 else:
                     raise RuntimeError(f"Unknown PB class {type(one_of_parameter_type_pb)}")
 
-            if workflow_pb.relations is None:
-                parameter_relations = []
-            else:
-                parameter_relations = list(workflow_pb.relations)
-
             workflow_types.append(
                 WorkflowType(
                     workflow_type_name=workflow_pb.type_name,
                     workflow_type_description_name=workflow_pb.type_description,
                     workflow_parameters=workflow_parameters,
-                    parameter_relations=parameter_relations,
                 )
             )
         return cls(workflow_types)
@@ -1089,16 +1149,11 @@ class WorkflowTypeManager:
                         )
                         break
 
-            parameter_relations = []
-            for relation_json in _workflow.get("parameter_relations", []):
-                parameter_relations.append(convert_json_to_parameter_relation(relation_json))
-
             workflow_types.append(
                 WorkflowType(
                     workflow_type_name=_workflow["workflow_type_name"],
                     workflow_type_description_name=_workflow["workflow_type_description_name"],
                     workflow_parameters=workflow_parameters,
-                    parameter_relations=parameter_relations,
                 )
             )
         return cls(workflow_types)
@@ -1128,12 +1183,10 @@ def convert_params_dict_to_struct(workflow: WorkflowType, params_dict: ParamsDic
 
         normalized_dict[parameter.key_name] = parameter.to_pb_value(param_value)
 
-    if workflow.parameter_relations is not None:
-        for relation in workflow.parameter_relations:
-            value1 = params_dict[relation.key_1]
-            value2 = params_dict[relation.key_2]
+        for constraint in parameter.constraints:
+            other_value = params_dict[constraint.key_2]
 
-            check_parameter_relation(value1, value2, relation)
+            parameter.check_parameter_constraint(param_value, other_value, constraint)
 
     params_dict_struct = Struct()
     params_dict_struct.update(normalized_dict)
