@@ -9,8 +9,7 @@ jobs:
     runs-on: windows-latest
     strategy:
       matrix:
-        python-version: ["3.8", "3.11"]
-#        python-version: [3.8, 3.9, 3.10, 3.11]
+        python-version: [ "3.9", "3.10", "3.11", "3.12", "3.13" ]
     steps:
     - uses: actions/checkout@v3
     - name: Set up Python ${{ matrix.python-version }}
@@ -22,10 +21,14 @@ jobs:
         .\ci\win32\create_venv.cmd
         .\ci\win32\install_dependencies.cmd
 
-    - name: run unit tests
+    - name: Run lint
+      run: |
+        .\ci\win32\lint.cmd
+
+    - name: Run unit tests
       run: |
         .\ci\win32\test_unit.cmd
 
-    - name: Lint
+    - name: Run typecheck
       run: |
-        .\ci\win32\lint.cmd
+        .\ci\win32\typecheck.cmd

@@ -11,9 +11,9 @@ from celery import Task as CeleryTask, Celery
 from celery.apps.worker import Worker as CeleryWorker
 from kombu import Queue as KombuQueue
 from esdl import EnergySystem
-from esdl.esdl_handler import EnergySystemHandler
 
 from omotes_sdk.internal.orchestrator_worker_events.esdl_messages import EsdlMessage
+from omotes_sdk.internal.common.esdl_util import pyesdl_from_string
 from omotes_sdk.internal.worker.configs import WorkerConfig
 from omotes_sdk.internal.common.broker_interface import BrokerInterface
 from omotes_sdk_protocol.internal.task_pb2 import (
@@ -239,18 +239,6 @@ class WorkerTask(CeleryTask):
             job_reference,
             task_id,
         )
-
-
-def pyesdl_from_string(input_str: str) -> EnergySystemHandler:
-    """
-    Loads esdl file from a string into memory.
-
-    Please note that it is not checked if the contents of the string is a valid esdl.
-    :param input_str: string containing the contents of an esdl file.
-    """
-    esh = EnergySystemHandler()
-    esh.load_from_string(input_str)
-    return esh
 
 
 def wrapped_worker_task(

@@ -16,7 +16,7 @@ from omotes_sdk_protocol.job_pb2 import (
     JobProgressUpdate,
     JobStatusUpdate,
     JobSubmission,
-    JobCancel,
+    JobDelete,
 )
 from omotes_sdk_protocol.workflow_pb2 import AvailableWorkflows, RequestAvailableWorkflows
 
@@ -115,7 +115,7 @@ class OmotesInterface:
         self,
         rabbitmq_config: RabbitMQConfig,
         client_id: str,
-        timeout_on_initial_workflow_definitions: timedelta = timedelta(minutes=1),
+        timeout_on_initial_workflow_definitions: timedelta = timedelta(minutes=1),  # noqa: B008
     ):
         """Create the OMOTES interface.
 
@@ -372,21 +372,28 @@ class OmotesInterface:
 
         return job
 
-    def cancel_job(self, job: Job) -> None:
-        """Cancel a job.
+    def delete_job(self, job: Job) -> None:
+        """Delete a job and all of its resources.
 
-        If this succeeds or not will be send as a job status update through the
-        `callback_on_status_update` handler. This method will not disconnect from the submitted job
-        events. This will need to be done separately using `disconnect_from_submitted_job`.
+        This will delete the job regardless of its current state. If it is running, it will be
+        cancelled. If the job produced any timeseries data, it will be deleted eventually.
 
-        :param job: The job to cancel.
+        Developers note:
+        If the jobs is  successfully cancelled or not will be sent as a job status update through
+        the `callback_on_status_update` handler. This method will not disconnect from the submitted
+        job events. This will need to be done separately using `disconnect_from_submitted_job`
+        after receiving the job status update.
+        Deletion of the timeseries is done by the orchestrator. See:
+        https://github.com/Project-OMOTES/architecture-documentation/blob/main/Feature_Time_Series_DB_Cleanup/Feature_Time_Series_DB_Cleanup.md
+
+        :param job: The job to delete.
         """
-        logger.info("Cancelling job %s", job.id)
-        cancel_msg = JobCancel(uuid=str(job.id))
+        logger.info("Deleting job %s", job.id)
+        delete_msg = JobDelete(uuid=str(job.id))
         self.broker_if.send_message_to(
             exchange_name=OmotesQueueNames.omotes_exchange_name(),
-            routing_key=OmotesQueueNames.job_cancel_queue_name(),
-            message=cancel_msg.SerializeToString(),
+            routing_key=OmotesQueueNames.job_delete_queue_name(),
+            message=delete_msg.SerializeToString(),
         )
 
     def connect_to_available_workflows_updates(self) -> None:
