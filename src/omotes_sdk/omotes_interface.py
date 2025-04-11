@@ -303,7 +303,7 @@ class OmotesInterface:
         auto_disconnect_on_result: bool,
         job_reference: Optional[str] = None,
         auto_cleanup_after_ttl: Optional[timedelta] = JOB_QUEUES_TTL,
-        job_priority: JobSubmission.JobPriority | int = JobSubmission.JobPriority.LOW,
+        job_priority: JobSubmission.JobPriority | int = JobSubmission.JobPriority.MEDIUM,
     ) -> Job:
         """Submit a new job and connect to progress and status updates and the job result.
 
