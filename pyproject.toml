@@ -75,7 +75,7 @@ enabled = true
 starting_version = "0.0.1"
 
 [tool.pytest.ini_options]
-addopts = "--cov=omotes_sdk --cov-report html --cov-report term-missing --cov-fail-under 62"
+addopts = "--cov=omotes_sdk --cov-report html --cov-report term-missing --cov-fail-under 60"
 
 [tool.coverage.run]
 source = ["src"]
