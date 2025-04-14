@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 import threading
 import uuid
@@ -303,6 +304,7 @@ class OmotesInterface:
         auto_disconnect_on_result: bool,
         job_reference: Optional[str] = None,
         auto_cleanup_after_ttl: Optional[timedelta] = JOB_QUEUES_TTL,
+        job_priority: Union[JobSubmission.JobPriority, int] = JobSubmission.JobPriority.MEDIUM,
     ) -> Job:
         """Submit a new job and connect to progress and status updates and the job result.
 
@@ -322,6 +324,7 @@ class OmotesInterface:
             `callback_on_finished`.
         :param job_reference: An optional reference to the submitted job which is used in the
             name of the output ESDL as well as in internal logging of OMOTES.
+        :param job_priority: An optional priority value for the job used in celery.
         :param auto_cleanup_after_ttl: When erroneous situations occur (e.g. client is offline),
             all queues pertaining to this job will be removed after the given TTL.
             Default to 48 hours if unset. Set to `None` to turn off auto clean up,
@@ -362,6 +365,7 @@ class OmotesInterface:
             esdl=esdl,
             params_dict=convert_params_dict_to_struct(workflow_type, params_dict),
             job_reference=job_reference,
+            job_priority=job_priority,  # type: ignore [arg-type]
         )
         self.broker_if.send_message_to(
             exchange_name=OmotesQueueNames.omotes_exchange_name(),

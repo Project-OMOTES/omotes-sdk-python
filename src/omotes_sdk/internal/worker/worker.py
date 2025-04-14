@@ -316,13 +316,16 @@ class Worker:
         )
 
         # Config of celery app
-        self.celery_app.conf.task_queues = (
-            KombuQueue(WORKER_TASK_TYPE, routing_key=WORKER_TASK_TYPE),
-        )  # Tell the worker to listen to a specific queue for 1 workflow type.
+        self.celery_app.conf.task_queues = [KombuQueue(
+            WORKER_TASK_TYPE, routing_key=WORKER_TASK_TYPE, queue_arguments={"x-max-priority": 10}
+        )]  # Tell the worker to listen to a specific queue for 1 workflow type.
         self.celery_app.conf.task_acks_late = True
         self.celery_app.conf.task_reject_on_worker_lost = True
         self.celery_app.conf.task_acks_on_failure_or_timeout = False
         self.celery_app.conf.worker_prefetch_multiplier = 1
+        self.celery_app.conf.broker_transport_options = {
+            "priority_step": 1
+        }  # Prioritize higher numbers
         self.celery_app.conf.broker_connection_retry_on_startup = True
         # app.conf.worker_send_task_events = True  # Tell the worker to send task events.
         self.celery_app.conf.worker_hijack_root_logger = False
