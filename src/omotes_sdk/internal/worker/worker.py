@@ -2,24 +2,22 @@ import io
 import logging
 import socket
 import sys
-from typing import Callable, Dict, List, Any, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from uuid import UUID
 
 import streamcapture
 from billiard.einfo import ExceptionInfo
-from celery import Task as CeleryTask, Celery
+from celery import Celery
+from celery import Task as CeleryTask
 from celery.apps.worker import Worker as CeleryWorker
-from kombu import Queue as KombuQueue
 from esdl import EnergySystem
+from kombu import Queue as KombuQueue
+from omotes_sdk_protocol.internal.task_pb2 import TaskProgressUpdate, TaskResult
 
-from omotes_sdk.internal.orchestrator_worker_events.esdl_messages import EsdlMessage
-from omotes_sdk.internal.common.esdl_util import pyesdl_from_string
-from omotes_sdk.internal.worker.configs import WorkerConfig
 from omotes_sdk.internal.common.broker_interface import BrokerInterface
-from omotes_sdk_protocol.internal.task_pb2 import (
-    TaskResult,
-    TaskProgressUpdate,
-)
+from omotes_sdk.internal.common.esdl_util import pyesdl_from_string
+from omotes_sdk.internal.orchestrator_worker_events.esdl_messages import EsdlMessage
+from omotes_sdk.internal.worker.configs import WorkerConfig
 from omotes_sdk.types import ProtobufDict
 
 logger = logging.getLogger("omotes_sdk_internal")
@@ -323,7 +321,13 @@ class Worker:
         queues = []
         for worker_task_type in WORKER_TASK_TYPES:
             logger.info("Starting Worker to work on task %s", worker_task_type)
-            queues.append(KombuQueue(worker_task_type, routing_key=worker_task_type, queue_arguments={"x-max-priority": 10}))
+            queues.append(
+                KombuQueue(
+                    worker_task_type,
+                    routing_key=worker_task_type,
+                    queue_arguments={"x-max-priority": 10},
+                )
+            )
             self.celery_app.task(
                 wrapped_worker_task, base=WorkerTask, name=worker_task_type, bind=True
             )
