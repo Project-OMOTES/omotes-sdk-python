@@ -8,7 +8,7 @@ authors = [
 ]
 description = "Python implementation of the OMOTES SDK through jobs which may be submitted, receive status updates for submitted jobs or delete submitted jobs."
 readme = "README.md"
-license = {file = "LICENSE"}
+license = { file = "LICENSE" }
 classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
@@ -26,7 +26,7 @@ classifiers = [
 dependencies = [
     "aio-pika ~= 9.4, < 9.5",
     "omotes-sdk-protocol ~= 1.2",
-    "pyesdl ~= 25.7",
+    "pyesdl ~= 26.2",
     "pamqp ~= 3.3",
     "celery ~= 5.3",
     "typing-extensions ~= 4.11",

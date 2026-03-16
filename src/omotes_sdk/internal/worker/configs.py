@@ -22,6 +22,8 @@ class WorkerConfig:
     """Name of the queue to which progress updates for the task should be send."""
     log_level: str
     """Log level for any logging in the worker."""
+    max_tasks_before_restart: int
+    """The number of tasks (runs) after which the celery worker will be restarted."""
 
     def __init__(self) -> None:
         """Create the worker config and retrieve values from environment variables."""
@@ -33,3 +35,4 @@ class WorkerConfig:
             "TASK_PROGRESS_QUEUE_NAME", "omotes_task_progress_events"
         )
         self.log_level = os.environ.get("LOG_LEVEL", "INFO")
+        self.max_tasks_before_restart = int(os.environ.get("MAX_TASKS_BEFORE_RESTART", 0))

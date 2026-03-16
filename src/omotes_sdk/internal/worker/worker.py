@@ -344,6 +344,9 @@ class Worker:
         # app.conf.worker_send_task_events = True  # Tell the worker to send task events.
         self.celery_app.conf.worker_hijack_root_logger = False
         self.celery_app.conf.worker_redirect_stdouts = False
+        # optionally restart celery worker after set number of tasks (runs)
+        if self.config.max_tasks_before_restart != 0:
+            self.celery_app.conf.worker_max_tasks_per_child = self.config.max_tasks_before_restart
 
         logger.info(
             "Connected to broker rabbitmq (%s:%s/%s) as %s",
