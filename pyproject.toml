@@ -1,6 +1,6 @@
 [project]
 name = "omotes-sdk-python"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dynamic = ["version"]
 authors = [
     { name = "Sebastiaan la Fleur", email = "sebastiaan.lafleur@tno.nl" },
@@ -26,7 +26,7 @@ classifiers = [
 dependencies = [
     "aio-pika ~= 9.4, < 9.5",
     "omotes-sdk-protocol ~= 1.2",
-    "pyesdl ~= 26.6.1",
+    "pyesdl[profiles] ~= 26.7",
     "pamqp ~= 3.3",
     "celery ~= 5.3",
     "typing-extensions ~= 4.11",
