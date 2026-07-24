@@ -1,37 +1,35 @@
-name: PyPi release
-run-name: Releasing next version 🚀
+name: Publish Python Package
+
 on:
   push:
     tags:
-      - '*'
+      - "*"
 
 jobs:
-  pypi-publish:
-    name: upload release to PyPI
+  publish-python-package:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: [ "3.10" ]
-    # Specifying a GitHub environment is optional, but strongly encouraged
     environment: release
     permissions:
-      # IMPORTANT: this permission is mandatory for trusted publishing
+      contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v3
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v4
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          fetch-depth: 0
-          python-version: ${{ matrix.python-version }}
-          cache: 'pip'
-      - run: |
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install build dependencies
+        run: |
           ./ci/linux/create_venv.sh
           ./ci/linux/install_dependencies.sh
 
-      - name: build
+      - name: Build package
         run: |
           ./ci/linux/build_python_package.sh
 
-      - name: Publish package distributions to PyPI
+      - name: Publish package to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
