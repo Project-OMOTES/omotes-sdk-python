@@ -19,17 +19,17 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
           cache: "pip"
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v2
+
       - name: Install build dependencies
-        run: |
-          ./ci/linux/create_venv.sh
-          ./ci/linux/install_dependencies.sh
+        run: uv sync --locked --group dev
 
       - name: Build package
-        run: |
-          ./ci/linux/build_python_package.sh
+        run: uv run python -m build
 
       - name: Publish package to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
