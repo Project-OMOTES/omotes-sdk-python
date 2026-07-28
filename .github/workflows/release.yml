@@ -1,4 +1,5 @@
 name: Publish Python Package
+run-name: Releasing next version 🚀
 
 on:
   push:

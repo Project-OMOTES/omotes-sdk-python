@@ -3,7 +3,7 @@ import logging
 import os
 import re
 from collections.abc import Callable
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 from uuid import UUID
 
 import httpx
@@ -21,17 +21,54 @@ from prefect.client.schemas.filters import (
     DeploymentFilterName,
     LogFilter,
 )
+from prefect.client.schemas.objects import FlowRun
 from prefect.client.schemas.sorting import DeploymentSort
-from prefect.context import (
-    get_run_context,
-)
-from prefect.exceptions import ObjectNotFound
+from prefect.context import get_run_context
+from prefect.exceptions import ObjectNotFound, PrefectHTTPStatusError
 from prefect.filesystems import RemoteFileSystem
 from prefect.runtime import flow_run
 from prefect.states import StateType
 from pydantic import BaseModel
 
 from omotes_sdk.job_status import JobStatus
+
+MEMORY_LIMIT_RE = re.compile(r"(?i)(\d+(?:\.\d+)?)([kmgtpe]i?|)")
+
+
+class MemoryLimit(str):
+    """Validated Kubernetes-style memory quantity.
+
+    Examples:
+        MemoryLimit("512Mi")
+        MemoryLimit("2Gi")
+        MemoryLimit("750M")
+
+    """
+
+    def __new__(cls, value: str) -> "MemoryLimit":
+        """Create a validated MemoryLimit value.
+
+        Returns:
+            MemoryLimit: Normalized and validated memory quantity.
+
+        Raises:
+            ValueError: If the value is not a supported memory quantity.
+
+        """
+        normalized = value.strip()
+        if not MEMORY_LIMIT_RE.fullmatch(normalized):
+            raise ValueError("Unsupported memory quantity format. Examples: '512Mi', '2Gi', '750M', '1000000'.")
+        return cast("MemoryLimit", str.__new__(cls, normalized))
+
+
+def as_memory_limit(value: str) -> MemoryLimit:
+    """Convert a plain string to a validated MemoryLimit value.
+
+    Returns:
+        MemoryLimit: Normalized and validated memory quantity.
+
+    """
+    return MemoryLimit(value)
 
 
 def _build_minio_result_storage(minio_host: str, access_key: str, secret_key: str) -> RemoteFileSystem:
@@ -68,6 +105,34 @@ for _noisy in (
     "urllib3",
 ):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
+
+
+def _raise_prefect_api_error(
+    exc: PrefectHTTPStatusError | httpx.RequestError,
+) -> NoReturn:
+    """Raise a user-facing error for Prefect API authentication/connectivity failures.
+
+    Raises:
+        RuntimeError: Describes unauthorized, upstream, or unavailable Prefect API errors.
+
+    """
+    prefect_api_url = os.getenv("PREFECT_API_URL", "<unset PREFECT_API_URL>")
+
+    if isinstance(exc, PrefectHTTPStatusError):
+        if exc.response.status_code == 401:
+            raise RuntimeError(
+                "Unauthorized: Invalid or missing authentication for Prefect server at "
+                f"{prefect_api_url}. Check PREFECT_API_AUTH_STRING setting."
+            ) from exc
+
+        raise RuntimeError(
+            f"Prefect server error (HTTP {exc.response.status_code}): {exc.response.reason_phrase}"
+        ) from exc
+
+    raise RuntimeError(
+        f"Prefect server is unavailable at {prefect_api_url}. "
+        "Start Prefect server or update PREFECT_API_URL, then try again."
+    ) from exc
 
 
 def in_prefect_flow_context() -> bool:
@@ -125,7 +190,9 @@ def _sanitize_for_minio(value: str) -> str:
 
 
 def _create_minio_presigned_url(
-    minio_block: RemoteFileSystem, object_path: str, expires_seconds: int = 7 * 24 * 60 * 60
+    minio_block: RemoteFileSystem,
+    object_path: str,
+    expires_seconds: int = 7 * 24 * 60 * 60,
 ) -> str | None:
     """Create a presigned GET URL for an object written via minio_block.
 
@@ -263,13 +330,15 @@ def create_flow_progress_updater(
             logging.error(f"Error logging progress update for run '{flow_run.get_name()}': artifact creation failed")
         else:
             update_progress_artifact(
-                artifact_id=artifact_id, progress=progress_fraction * 100.0, description=description
+                artifact_id=artifact_id,
+                progress=progress_fraction * 100.0,
+                description=description,
             )
 
     return _update
 
 
-def _memory_quantity_to_bytes(memory_limit: str) -> int:
+def _memory_quantity_to_bytes(memory_limit: MemoryLimit | str) -> int:
     """Convert a Kubernetes-style memory quantity into bytes for Docker.
 
     Returns:
@@ -279,8 +348,8 @@ def _memory_quantity_to_bytes(memory_limit: str) -> int:
         ValueError: If the input memory quantity has an unsupported format.
 
     """
-    normalized = memory_limit.strip()
-    match = re.fullmatch(r"(?i)(\d+(?:\.\d+)?)([kmgtpe]i?|)", normalized)
+    normalized = str(memory_limit).strip()
+    match = MEMORY_LIMIT_RE.fullmatch(normalized)
     if not match:
         raise ValueError(f"Unsupported memory quantity: {memory_limit!r}")
 
@@ -304,11 +373,53 @@ def _memory_quantity_to_bytes(memory_limit: str) -> int:
     return int(value * binary_factors[suffix])
 
 
-def build_universal_job_vars(memory_limit: str | None = None, base_vars: dict | None = None) -> dict | None:
+def _to_docker_mem_limit(value: MemoryLimit | str | int | float) -> str:
+    """Convert memory values into Docker-compatible mem_limit string.
+
+    Docker expects values parseable by docker.utils.parse_bytes, e.g. "1024m"
+    or "8589934592b". We emit bytes with a trailing "b" for exact values.
+
+    Returns:
+        str: Docker-compatible memory limit string.
+
+    """
+    if isinstance(value, (int, float)):
+        return f"{int(value)}b"
+
+    normalized = str(value).strip()
+
+    # Already a Docker parse_bytes value (supports b, k, m, g).
+    lower = normalized.lower()
+    docker_match = re.fullmatch(r"\d+(?:\.\d+)?[bkmg]", lower)
+    if docker_match:
+        return lower
+
+    try:
+        as_memory = MemoryLimit(normalized)
+    except ValueError:
+        # Preserve caller-supplied Docker-style values (e.g. "8g", "1024m").
+        return normalized
+
+    # Preserve decimal SI units directly when Docker can parse them.
+    quantity_match = MEMORY_LIMIT_RE.fullmatch(str(as_memory).strip())
+    if quantity_match:
+        number = quantity_match.group(1)
+        suffix = quantity_match.group(2).lower()
+        if suffix in {"k", "m", "g"}:
+            return f"{number}{suffix}"
+
+    return f"{_memory_quantity_to_bytes(as_memory)}b"
+
+
+def build_universal_job_vars(
+    memory_limit: MemoryLimit | str | None = None, base_vars: dict | None = None
+) -> dict | None:
     """Build a job_variables payload for Kubernetes-style memory input.
 
     Kubernetes workers use memory_request and memory_limit directly.
-    Docker workers use mem_limit, so we convert the Kubernetes quantity to bytes in Python.
+    Docker workers require mem_limit in Docker parse_bytes format. We emit a
+    byte-string value (e.g. "8589934592b") so it also satisfies schemas that
+    require a string.
 
     Returns:
         dict | None: Job variables suitable for worker deployment or None if unchanged.
@@ -316,10 +427,15 @@ def build_universal_job_vars(memory_limit: str | None = None, base_vars: dict | 
     """
     job_vars = dict(base_vars or {})
 
+    # Normalize provided mem_limit to Docker-compatible string.
+    if "mem_limit" in job_vars and job_vars["mem_limit"] is not None:
+        job_vars["mem_limit"] = _to_docker_mem_limit(job_vars["mem_limit"])
+
     if memory_limit:
-        job_vars["memory_limit"] = memory_limit
-        job_vars["memory_request"] = memory_limit
-        job_vars["mem_limit"] = _memory_quantity_to_bytes(memory_limit)
+        normalized_memory_limit = MemoryLimit(str(memory_limit))
+        job_vars["memory_limit"] = str(normalized_memory_limit)
+        job_vars["memory_request"] = str(normalized_memory_limit)
+        job_vars["mem_limit"] = _to_docker_mem_limit(normalized_memory_limit)
 
     return job_vars or None
 
@@ -330,6 +446,7 @@ async def deploy_flow(
     image_name: str,
     job_variables: dict,
     prefect_work_pool_name: str,
+    max_concurrent_runs: int | None = None,
 ) -> None:
     """Deploy prefect flow with variables.
 
@@ -342,20 +459,27 @@ async def deploy_flow(
         image_name: Name of the Docker image.
         job_variables: Job variables.
         prefect_work_pool_name: Name of the Prefect work pool.
+        max_concurrent_runs: Maximum number of concurrent flow runs for this deployment.
 
     Raises:
         RuntimeError: If a semantic-versioned deployment already exists.
+        ValueError: If max_concurrent_runs is provided and is less than 1.
 
     """
     version_name = image_name.rsplit(":", 1)[-1]
+    if max_concurrent_runs is not None and max_concurrent_runs < 1:
+        raise ValueError("max_concurrent_runs must be at least 1")
 
-    async with get_client() as client:
-        deployments = await client.read_deployments(
-            deployment_filter=DeploymentFilter(name=DeploymentFilterName(any_=[deployment_name])),
-            sort=DeploymentSort.CREATED_DESC,
-        )
-        if deployments and is_semantic_version(version_name):
-            raise RuntimeError(f"Prefect flow cannot be overwritten for semantic version '{deployment_name}'")
+    try:
+        async with get_client() as client:
+            deployments = await client.read_deployments(
+                deployment_filter=DeploymentFilter(name=DeploymentFilterName(any_=[deployment_name])),
+                sort=DeploymentSort.CREATED_DESC,
+            )
+            if deployments and is_semantic_version(version_name):
+                raise RuntimeError(f"Prefect flow cannot be overwritten for semantic version '{deployment_name}'")
+    except (PrefectHTTPStatusError, httpx.RequestError) as exc:
+        _raise_prefect_api_error(exc)
 
     deployable_flow = cast(Any, flow_function)
     await deployable_flow.deploy(
@@ -364,6 +488,7 @@ async def deploy_flow(
         image=image_name,
         build=False,
         job_variables=job_variables,
+        concurrency_limit=max_concurrent_runs,
     )
 
 
@@ -402,10 +527,13 @@ async def get_flow_versions_by_name(flow_names: list[str]) -> dict[str, list[str
     if not requested_flow_names:
         return {}
 
-    async with get_client() as client:
-        deployments = await client.read_deployments(
-            sort=DeploymentSort.CREATED_DESC,
-        )
+    try:
+        async with get_client() as client:
+            deployments = await client.read_deployments(
+                sort=DeploymentSort.CREATED_DESC,
+            )
+    except (PrefectHTTPStatusError, httpx.RequestError) as exc:
+        _raise_prefect_api_error(exc)
 
     result: dict[str, list[str]] = {flow_name: [] for flow_name in requested_flow_names}
     for deployment in deployments:
@@ -441,25 +569,6 @@ def _version_sort_key(version_name: str) -> tuple[int, tuple[int, int, int], int
     return (1, (major, minor, patch), 1 if prerelease is None else 0, prerelease or "")
 
 
-async def get_flows_with_versions(identifier: str | None = None) -> list[dict]:
-    """Return deployments grouped by flow name and version list.
-
-    Returns:
-        list[dict]: Flow names with their available version names.
-    """
-    async with get_client() as client:
-        deployments = await client.read_deployments(
-            sort=DeploymentSort.CREATED_DESC,
-        )
-        result = {}
-        for deployment in deployments:
-            if (not identifier or identifier in deployment.name) and ":" in deployment.name:
-                name_part, version_part = deployment.name.split(":", 1)
-                result.setdefault(name_part, []).append(version_part)
-
-        return [{"name": k, "version_names": v} for k, v in result.items()]
-
-
 def from_prefect_state_type_to_job_status(prefect_state_type: StateType) -> JobStatus:
     """Map a Prefect state type to the corresponding job status.
 
@@ -471,7 +580,11 @@ def from_prefect_state_type_to_job_status(prefect_state_type: StateType) -> JobS
     """
     if prefect_state_type in [StateType.PENDING]:
         return JobStatus.ENQUEUED
-    elif prefect_state_type in [StateType.SCHEDULED, StateType.RUNNING, StateType.PAUSED]:
+    elif prefect_state_type in [
+        StateType.SCHEDULED,
+        StateType.RUNNING,
+        StateType.PAUSED,
+    ]:
         return JobStatus.RUNNING
     elif prefect_state_type in [StateType.COMPLETED]:
         return JobStatus.SUCCEEDED
@@ -496,61 +609,71 @@ async def get_flow_run_status_and_results(
         RuntimeError: If the flow run has no state.
     """
     flow_run_uuid = flow_run_id if isinstance(flow_run_id, UUID) else UUID(str(flow_run_id))
-    async with get_client() as client:
-        flow_run = await client.read_flow_run(flow_run_uuid)
-        if flow_run.state is None:
-            raise RuntimeError(f"Prefect flow run '{flow_run_uuid}' does not have a state")
+    try:
+        async with get_client() as client:
+            flow_run = await client.read_flow_run(flow_run_uuid)
+            if flow_run.state is None:
+                raise RuntimeError(f"Prefect flow run '{flow_run_uuid}' does not have a state")
 
-        run_state_type = flow_run.state.type
+            run_state_type = flow_run.state.type
 
-        artifacts = await client.read_artifacts(
-            artifact_filter=ArtifactFilter(
-                flow_run_id=ArtifactFilterFlowRunId(any_=[flow_run_uuid]),
-                # key=ArtifactFilterKey(any_=["metadata"]),
+            artifacts = await client.read_artifacts(
+                artifact_filter=ArtifactFilter(
+                    flow_run_id=ArtifactFilterFlowRunId(any_=[flow_run_uuid]),
+                    # key=ArtifactFilterKey(any_=["metadata"]),
+                )
             )
-        )
 
-        tags_by_key: dict[str, str] = {}
-        for tag in flow_run.tags or []:
-            if ":" in tag:
-                tag_key, tag_value = tag.split(":", 1)
-                tags_by_key[tag_key] = tag_value
-            else:
-                tags_by_key[tag] = ""
+            tags_by_key: dict[str, str] = {}
+            for tag in flow_run.tags or []:
+                if ":" in tag:
+                    tag_key, tag_value = tag.split(":", 1)
+                    tags_by_key[tag_key] = tag_value
+                else:
+                    tags_by_key[tag] = ""
 
-        artifacts_by_key: dict[str, dict[str, Any]] = {}
-        for artifact in artifacts:
-            artifact_key = artifact.key or str(artifact.id)
-            artifact_data = await _resolve_artifact_data(artifact.data)
+            artifacts_by_key: dict[str, dict[str, Any]] = {}
+            for artifact in artifacts:
+                artifact_key = artifact.key or str(artifact.id)
+                artifact_data = await _resolve_artifact_data(artifact.data)
 
-            artifacts_by_key[artifact_key] = {
-                "data": artifact_data,
-                "description": artifact.description,
-            }
+                artifacts_by_key[artifact_key] = {
+                    "data": artifact_data,
+                    "description": artifact.description,
+                }
 
-        log_filter = LogFilter(flow_run_id={"any_": [flow_run.id]})
-        logs = await client.read_logs(log_filter=log_filter)
-        log_lines: list[str] = []
-        for log in logs:
-            level_value = getattr(log, "level", None)
-            if isinstance(level_value, int):
-                level_name = logging.getLevelName(level_value)
-            elif isinstance(level_value, str):
-                level_name = level_value
-            else:
-                level_name = "unknown"
+            log_filter = LogFilter(flow_run_id={"any_": [flow_run.id]})
+            logs = await client.read_logs(log_filter=log_filter)
+            log_lines: list[str] = []
+            for log in logs:
+                level_value = getattr(log, "level", None)
+                if isinstance(level_value, int):
+                    level_name = logging.getLevelName(level_value)
+                elif isinstance(level_value, str):
+                    level_name = level_value
+                else:
+                    level_name = "unknown"
 
-            log_lines.append(
-                f"{getattr(log, 'timestamp', '')} "
-                f"[{str(level_name).lower()}]: "
-                f"{getattr(log, 'message', '')} "
-                f"[{getattr(log, 'name', 'unknown')}]"
+                log_lines.append(
+                    f"{getattr(log, 'timestamp', '')} "
+                    f"[{str(level_name).lower()}]: "
+                    f"{getattr(log, 'message', '')} "
+                    f"[{getattr(log, 'name', 'unknown')}]"
+                )
+            log_str = "\n".join(log_lines)
+
+            logging.debug(f"Prefect run found with id '{flow_run.id}' in state '{run_state_type}'.")
+
+            return (
+                flow_run.name,
+                run_state_type,
+                flow_run.parameters,
+                tags_by_key,
+                artifacts_by_key,
+                log_str,
             )
-        log_str = "\n".join(log_lines)
-
-        logging.debug(f"Prefect run found with id '{flow_run.id}' in state '{run_state_type}'.")
-
-        return flow_run.name, run_state_type, flow_run.parameters, tags_by_key, artifacts_by_key, log_str
+    except (PrefectHTTPStatusError, httpx.RequestError) as exc:
+        _raise_prefect_api_error(exc)
 
 
 _MINIO_MARKDOWN_LINK_RE = re.compile(r"^\[(?P<label>.*?)\]\((?P<url>https?://[^)]+)\)$")
@@ -590,7 +713,7 @@ async def trigger_flow_run(
     deployment_base_name: str,
     deployment_version: str | None = None,
     parameters: dict | None = None,
-    memory_limit: str | None = None,
+    memory_limit: MemoryLimit | str | None = None,
     job_variables: dict | None = None,
     run_tags: list[str] | None = None,
 ) -> UUID:
@@ -602,50 +725,66 @@ async def trigger_flow_run(
     Raises:
         RuntimeError: If the requested deployment does not exist.
     """
-    async with get_client() as client:
-        if deployment_version is None:
-            deployments = await client.read_deployments(sort=DeploymentSort.CREATED_DESC)
-            matching_deployments = [
-                deployment for deployment in deployments if deployment.name.startswith(f"{deployment_base_name}:")
-            ]
-            if not matching_deployments:
-                raise RuntimeError(f"Prefect deployment '{deployment_base_name}' not found for run '{run_name}'")
+    try:
+        async with get_client() as client:
+            if deployment_version is None:
+                deployments = await client.read_deployments(sort=DeploymentSort.CREATED_DESC)
+                matching_deployments = [
+                    deployment for deployment in deployments if deployment.name.startswith(f"{deployment_base_name}:")
+                ]
+                if not matching_deployments:
+                    raise RuntimeError(f"Prefect deployment '{deployment_base_name}' not found for run '{run_name}'")
 
-            selected_deployment = max(
-                matching_deployments,
-                key=lambda deployment: _version_sort_key(deployment.name.split(":", 1)[1]),
+                selected_deployment = max(
+                    matching_deployments,
+                    key=lambda deployment: _version_sort_key(deployment.name.split(":", 1)[1]),
+                )
+                deployment_name = selected_deployment.name
+                deployment_version = deployment_name.split(":", 1)[1]
+            else:
+                deployment_name = f"{deployment_base_name}:{deployment_version}"
+                deployments = await client.read_deployments(
+                    deployment_filter=DeploymentFilter(name=DeploymentFilterName(any_=[deployment_name])),
+                    sort=DeploymentSort.CREATED_DESC,
+                )
+
+                if not deployments:
+                    raise RuntimeError(f"Prefect deployment '{deployment_name}' not found for run '{run_name}'")
+
+                selected_deployment = deployments[0]
+
+            resolved_run_tags = [f"version:{deployment_version}"]
+            if run_tags:
+                resolved_run_tags.extend(run_tags)
+
+            deployment_id = selected_deployment.id
+            flow_run = await client.create_flow_run_from_deployment(
+                deployment_id=deployment_id,
+                parameters=parameters or {},
+                name=run_name,
+                tags=resolved_run_tags,
+                job_variables=build_universal_job_vars(memory_limit=memory_limit, base_vars=job_variables),
             )
-            deployment_name = selected_deployment.name
-            deployment_version = deployment_name.split(":", 1)[1]
-        else:
-            deployment_name = f"{deployment_base_name}:{deployment_version}"
-            deployments = await client.read_deployments(
-                deployment_filter=DeploymentFilter(name=DeploymentFilterName(any_=[deployment_name])),
-                sort=DeploymentSort.CREATED_DESC,
+            logging.info(
+                f"✅ Created flow run '{run_name}' from '{deployment_name}' → Run ID: {flow_run.id}; "
+                f"tags={resolved_run_tags}"
             )
+            return flow_run.id
+    except (PrefectHTTPStatusError, httpx.RequestError) as exc:
+        _raise_prefect_api_error(exc)
 
-            if not deployments:
-                raise RuntimeError(f"Prefect deployment '{deployment_name}' not found for run '{run_name}'")
 
-            selected_deployment = deployments[0]
+async def get_runs() -> list[FlowRun]:
+    """Get all Prefect flow runs.
 
-        resolved_run_tags = [f"version:{deployment_version}"]
-        if run_tags:
-            resolved_run_tags.extend(run_tags)
-
-        deployment_id = selected_deployment.id
-        flow_run = await client.create_flow_run_from_deployment(
-            deployment_id=deployment_id,
-            parameters=parameters or {},
-            name=run_name,
-            tags=resolved_run_tags,
-            job_variables=build_universal_job_vars(memory_limit=memory_limit, base_vars=job_variables),
-        )
-        logging.info(
-            f"✅ Created flow run '{run_name}' from '{deployment_name}' → Run ID: {flow_run.id}; "
-            f"tags={resolved_run_tags}"
-        )
-        return flow_run.id
+    Returns:
+        list[FlowRun]: List of Prefect flow runs.
+    """
+    try:
+        async with get_client() as client:
+            return await client.read_flow_runs()
+    except (PrefectHTTPStatusError, httpx.RequestError) as exc:
+        _raise_prefect_api_error(exc)
 
 
 async def delete_run(flow_run_id: UUID) -> bool:
@@ -654,10 +793,13 @@ async def delete_run(flow_run_id: UUID) -> bool:
     Returns:
         bool: True when the flow run was deleted, False when it did not exist.
     """
-    async with get_client() as client:
-        try:
-            await client.delete_flow_run(flow_run_id)
-        except ObjectNotFound:
-            return False
+    try:
+        async with get_client() as client:
+            try:
+                await client.delete_flow_run(flow_run_id)
+            except ObjectNotFound:
+                return False
+    except (PrefectHTTPStatusError, httpx.RequestError) as exc:
+        _raise_prefect_api_error(exc)
 
     return True

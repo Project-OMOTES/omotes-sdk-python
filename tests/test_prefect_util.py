@@ -13,9 +13,11 @@ from omotes_sdk.prefect_util import (
     _memory_quantity_to_bytes,
     _resolve_artifact_data,
     _sanitize_for_minio,
+    _to_docker_mem_limit,
     _version_sort_key,
     build_universal_job_vars,
     from_prefect_state_type_to_job_status,
+    get_runs,
     is_semantic_version,
 )
 
@@ -80,8 +82,31 @@ def test_build_universal_job_vars_with_memory_and_base_vars() -> None:
     assert result["existing"] == "value"
     assert result["memory_limit"] == "512Mi"
     assert result["memory_request"] == "512Mi"
-    assert result["mem_limit"] == 512 * 1024 * 1024
+    assert result["mem_limit"] == "536870912b"
     assert base_vars == {"existing": "value"}
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    [
+        (512 * 1024 * 1024, "536870912b"),
+        ("8G", "8g"),
+        ("2Gi", "2147483648b"),
+        ("750M", "750m"),
+        ("1024m", "1024m"),
+    ],
+)
+def test_to_docker_mem_limit(raw_value: str | int, expected: str) -> None:
+    assert _to_docker_mem_limit(raw_value) == expected
+
+
+def test_build_universal_job_vars_normalizes_existing_mem_limit() -> None:
+    base_vars = {"mem_limit": "8G", "keep": "yes"}
+
+    result = build_universal_job_vars(base_vars=base_vars)
+
+    assert result == {"mem_limit": "8g", "keep": "yes"}
+    assert base_vars == {"mem_limit": "8G", "keep": "yes"}
 
 
 def test_build_universal_job_vars_returns_none_when_empty() -> None:
@@ -149,3 +174,39 @@ def test_resolve_artifact_data_returns_original_for_non_json_string() -> None:
     raw_data = "not json"
 
     assert asyncio.run(_resolve_artifact_data(raw_data)) == raw_data
+
+
+def test_get_runs_returns_all_flow_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    expected_runs = ["run-1", "run-2"]
+
+    class _Client:
+        async def read_flow_runs(self) -> list[str]:
+            return expected_runs
+
+    class _ClientContext:
+        async def __aenter__(self) -> _Client:
+            return _Client()
+
+        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> bool:
+            return False
+
+    monkeypatch.setattr("omotes_sdk.prefect_util.get_client", lambda: _ClientContext())
+
+    assert asyncio.run(get_runs()) == expected_runs
+
+
+def test_get_runs_returns_empty_list_when_no_flow_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Client:
+        async def read_flow_runs(self) -> list[str]:
+            return []
+
+    class _ClientContext:
+        async def __aenter__(self) -> _Client:
+            return _Client()
+
+        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> bool:
+            return False
+
+    monkeypatch.setattr("omotes_sdk.prefect_util.get_client", lambda: _ClientContext())
+
+    assert asyncio.run(get_runs()) == []
