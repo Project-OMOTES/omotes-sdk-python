@@ -1,3 +1,4 @@
-from omotes_sdk.prefect_util import MemoryLimit, as_memory_limit
+from omotes_sdk.job_status import JobStatus
+from omotes_sdk.memory_quantity import MemoryLimit
 
-__all__ = ["MemoryLimit", "as_memory_limit"]
+__all__ = ["JobStatus", "MemoryLimit"]

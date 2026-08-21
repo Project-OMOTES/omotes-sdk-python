@@ -15,7 +15,7 @@ This project uses:
 
 ### Setup
 
-Install dependencies:
+Install dependencies and update `uv.lock` file after updating `pyproject.toml` dependencies:
 
 ```bash
 uv sync
@@ -23,12 +23,13 @@ uv sync
 
 ### Lint/typecheck/test locally
 
-Run via just (also used in in github actions):
+Run via just (also used in github actions):
 
 ```bash
 just ci            # run all CI checks (lint, format-check, typecheck, test)
 
 just lint          # ruff checks
+just security      # ruff security
 just format        # ruff format
 just format-check  # verify formatting
 just typecheck     # ty type checking

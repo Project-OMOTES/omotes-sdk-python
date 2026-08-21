@@ -8,17 +8,18 @@ from prefect.states import StateType
 from pydantic import BaseModel, Field
 
 from omotes_sdk.job_status import JobStatus
+from omotes_sdk.memory_quantity import _memory_quantity_to_bytes
 from omotes_sdk.prefect_util import (
+    _build_universal_job_vars,
     _get_required_file_extension,
-    _memory_quantity_to_bytes,
+    _is_semantic_version,
     _resolve_artifact_data,
     _sanitize_for_minio,
     _to_docker_mem_limit,
     _version_sort_key,
-    build_universal_job_vars,
+    create_flow_progress_updater,
     from_prefect_state_type_to_job_status,
     get_runs,
-    is_semantic_version,
 )
 
 
@@ -76,7 +77,7 @@ def test_memory_quantity_to_bytes_rejects_unsupported_format() -> None:
 def test_build_universal_job_vars_with_memory_and_base_vars() -> None:
     base_vars = {"existing": "value"}
 
-    result = build_universal_job_vars(memory_limit="512Mi", base_vars=base_vars)
+    result = _build_universal_job_vars(memory_limit="512Mi", base_vars=base_vars)
 
     assert result is not None
     assert result["existing"] == "value"
@@ -103,14 +104,24 @@ def test_to_docker_mem_limit(raw_value: str | int, expected: str) -> None:
 def test_build_universal_job_vars_normalizes_existing_mem_limit() -> None:
     base_vars = {"mem_limit": "8G", "keep": "yes"}
 
-    result = build_universal_job_vars(base_vars=base_vars)
+    result = _build_universal_job_vars(base_vars=base_vars)
 
     assert result == {"mem_limit": "8g", "keep": "yes"}
     assert base_vars == {"mem_limit": "8G", "keep": "yes"}
 
 
 def test_build_universal_job_vars_returns_none_when_empty() -> None:
-    assert build_universal_job_vars() is None
+    assert _build_universal_job_vars() is None
+
+
+def test_create_flow_progress_updater_is_noop_outside_prefect_context(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level("WARNING"):
+        updater = create_flow_progress_updater()
+        updater(0.5, "local run")
+
+    assert "outside a Prefect flow context" in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -124,7 +135,7 @@ def test_build_universal_job_vars_returns_none_when_empty() -> None:
     ],
 )
 def test_is_semantic_version(version_name: str, expected: bool) -> None:
-    assert is_semantic_version(version_name) is expected
+    assert _is_semantic_version(version_name) is expected
 
 
 def test_version_sort_key_orders_semver_before_non_semver_and_stable_before_prerelease() -> None:
@@ -132,7 +143,14 @@ def test_version_sort_key_orders_semver_before_non_semver_and_stable_before_prer
 
     sorted_versions = sorted(versions, key=_version_sort_key, reverse=True)
 
-    assert sorted_versions == ["2.0.0", "1.10.0", "1.2.3", "1.2.3-beta", "latest", "dev"]
+    assert sorted_versions == [
+        "2.0.0",
+        "1.10.0",
+        "1.2.3",
+        "1.2.3-beta",
+        "latest",
+        "dev",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -161,19 +179,45 @@ def test_from_prefect_state_type_to_job_status_raises_on_unexpected() -> None:
 
 
 def test_resolve_artifact_data_non_string_passthrough() -> None:
-    assert asyncio.run(_resolve_artifact_data(123)) == 123
+    assert asyncio.run(_resolve_artifact_data(123, "minio.example.com", 9000, "key", "secret")) == 123
 
 
 def test_resolve_artifact_data_parses_json_strings() -> None:
-    resolved = asyncio.run(_resolve_artifact_data('{"a": 1, "b": [2, 3]}'))
+    resolved = asyncio.run(_resolve_artifact_data('{"a": 1, "b": [2, 3]}', "minio.example.com", 9000, "key", "secret"))
 
     assert resolved == {"a": 1, "b": [2, 3]}
+
+
+def test_resolve_artifact_data_reads_minio_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _MinioBlock:
+        basepath = "s3://prefect-results/flow-results"
+        object_path: str | None = None
+
+        async def read_path(self, object_path: str) -> bytes:
+            self.object_path = object_path
+            return b'{"progress": 0.5}'
+
+    minio_block = _MinioBlock()
+    monkeypatch.setattr("omotes_sdk.prefect_util._build_minio_result_storage", lambda *args: minio_block)
+
+    resolved = asyncio.run(
+        _resolve_artifact_data(
+            "http://minio.example.com:9000/prefect-results/flow-results/oo3-7314720b/output-esdl-7314720b.esdl?X-Amz-Signature=expired",
+            "minio.example.com",
+            9000,
+            "key",
+            "secret",
+        )
+    )
+
+    assert minio_block.object_path == "oo3-7314720b/output-esdl-7314720b.esdl"
+    assert resolved == {"progress": 0.5}
 
 
 def test_resolve_artifact_data_returns_original_for_non_json_string() -> None:
     raw_data = "not json"
 
-    assert asyncio.run(_resolve_artifact_data(raw_data)) == raw_data
+    assert asyncio.run(_resolve_artifact_data(raw_data, "minio.example.com", 9000, "key", "secret")) == raw_data
 
 
 def test_get_runs_returns_all_flow_runs(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -195,7 +239,9 @@ def test_get_runs_returns_all_flow_runs(monkeypatch: pytest.MonkeyPatch) -> None
     assert asyncio.run(get_runs()) == expected_runs
 
 
-def test_get_runs_returns_empty_list_when_no_flow_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_runs_returns_empty_list_when_no_flow_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class _Client:
         async def read_flow_runs(self) -> list[str]:
             return []

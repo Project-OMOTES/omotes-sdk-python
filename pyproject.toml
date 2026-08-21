@@ -3,8 +3,9 @@ name = "omotes-sdk-python"
 requires-python = ">=3.11"
 dynamic = ["version"]
 authors = [
-    { name = "Sebastiaan la Fleur", email = "sebastiaan.lafleur@tno.nl" },
     { name = "Mark Vrijlandt", email = "mark.vrijlandt@tno.nl" },
+    { name = "Cheng-Kai Wang", email = "cheng-kai.wang@tno.nl" },
+    { name = "Sebastiaan la Fleur", email = "sebastiaan.lafleur@tno.nl" }
 ]
 description = "Python implementation of the OMOTES SDK through jobs which may be submitted, receive status updates for submitted jobs or delete submitted jobs."
 readme = "README.md"
@@ -12,7 +13,6 @@ license = { file = "LICENSE" }
 classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Operating System :: OS Independent",
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -90,6 +90,7 @@ select = [
     "D",   # pydocstyle
     "ANN", # flake8-annotations
     "DOC", # flake8-docstrings
+    "S",   # flake8-bandit
 ]
 ignore = [
     "D100", # Missing docstring in public module
@@ -99,3 +100,6 @@ exclude = ["justfile", ".editorconfig"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]  # assert statements are standard in tests

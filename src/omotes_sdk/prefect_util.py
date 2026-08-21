@@ -4,6 +4,7 @@ import os
 import re
 from collections.abc import Callable
 from typing import Any, NoReturn, cast
+from urllib.parse import urlsplit
 from uuid import UUID
 
 import httpx
@@ -31,56 +32,27 @@ from prefect.states import StateType
 from pydantic import BaseModel
 
 from omotes_sdk.job_status import JobStatus
-
-MEMORY_LIMIT_RE = re.compile(r"(?i)(\d+(?:\.\d+)?)([kmgtpe]i?|)")
-
-
-class MemoryLimit(str):
-    """Validated Kubernetes-style memory quantity.
-
-    Examples:
-        MemoryLimit("512Mi")
-        MemoryLimit("2Gi")
-        MemoryLimit("750M")
-
-    """
-
-    def __new__(cls, value: str) -> "MemoryLimit":
-        """Create a validated MemoryLimit value.
-
-        Returns:
-            MemoryLimit: Normalized and validated memory quantity.
-
-        Raises:
-            ValueError: If the value is not a supported memory quantity.
-
-        """
-        normalized = value.strip()
-        if not MEMORY_LIMIT_RE.fullmatch(normalized):
-            raise ValueError("Unsupported memory quantity format. Examples: '512Mi', '2Gi', '750M', '1000000'.")
-        return cast("MemoryLimit", str.__new__(cls, normalized))
+from omotes_sdk.memory_quantity import (
+    MemoryLimit,
+    _to_docker_mem_limit,
+)
 
 
-def as_memory_limit(value: str) -> MemoryLimit:
-    """Convert a plain string to a validated MemoryLimit value.
-
-    Returns:
-        MemoryLimit: Normalized and validated memory quantity.
-
-    """
-    return MemoryLimit(value)
-
-
-def _build_minio_result_storage(minio_host: str, access_key: str, secret_key: str) -> RemoteFileSystem:
+def _build_minio_result_storage(
+    minio_host: str,
+    minio_port: str | int,
+    access_key: str,
+    secret_key: str,
+    bucket: str = "prefect-results",
+    prefix: str = "flow-results",
+) -> RemoteFileSystem:
     """Create MinIO-backed Prefect result storage block when env vars are available.
 
     Returns:
         RemoteFileSystem: Configured Prefect result storage block.
 
     """
-    bucket = "prefect-results"
-    prefix = "flow-results"
-    endpoint_url = f"http://{minio_host}"
+    endpoint_url = f"http://{minio_host}:{minio_port}"
 
     return RemoteFileSystem(
         basepath=f"s3://{bucket}/{prefix}",
@@ -149,7 +121,7 @@ def in_prefect_flow_context() -> bool:
         return False
 
 
-def get_flow_run_id_first_part() -> str:
+def _get_flow_run_id_first_part() -> str:
     """Get first part of flow run id.
 
     For local runs a default value is returned.
@@ -233,7 +205,11 @@ def _get_required_file_extension(result: BaseModel, field_name: str) -> str:
 
 
 def write_flow_return_artifact_to_minio(
-    flow_result: BaseModel, minio_host: str, access_key: str, secret_key: str
+    flow_result: BaseModel,
+    minio_host: str,
+    minio_port: str,
+    access_key: str,
+    secret_key: str,
 ) -> str | None:
     """Persist flow return fields to MinIO and publish Prefect links to those objects.
 
@@ -244,14 +220,14 @@ def write_flow_return_artifact_to_minio(
     if not in_prefect_flow_context():
         return None
 
-    minio_block = _build_minio_result_storage(minio_host, access_key, secret_key)
-    run_folder_path = _sanitize_for_minio(f"{flow_run.get_name()}-{get_flow_run_id_first_part()}")
+    minio_block = _build_minio_result_storage(minio_host, minio_port, access_key, secret_key)
+    run_folder_path = _sanitize_for_minio(f"{flow_run.get_name()}-{_get_flow_run_id_first_part()}")
 
     for field_name, field_value in flow_result:
         if field_value is None:
             continue
 
-        artifact_key = _sanitize_for_minio(f"{field_name}-{get_flow_run_id_first_part()}")
+        artifact_key = _sanitize_for_minio(f"{field_name}-{_get_flow_run_id_first_part()}")
         field_extension = _get_required_file_extension(flow_result, field_name)
         field_object_path = f"{run_folder_path}/{artifact_key}{field_extension}"
 
@@ -318,7 +294,11 @@ def create_flow_progress_updater(
         Callable[[float, str | None], None]: Function that updates progress artifacts.
 
     """
-    progress_key = f"progress-{get_flow_run_id_first_part()}"
+    if not in_prefect_flow_context():
+        logging.warning("Progress updates are unavailable outside a Prefect flow context; returning a no-op updater.")
+        return lambda progress_fraction, description=None: None
+
+    progress_key = f"progress-{_get_flow_run_id_first_part()}"
     artifact_id = create_flow_progress_artifact(
         key=progress_key,
         start_progress=start_progress_fraction * 100.0,
@@ -338,80 +318,7 @@ def create_flow_progress_updater(
     return _update
 
 
-def _memory_quantity_to_bytes(memory_limit: MemoryLimit | str) -> int:
-    """Convert a Kubernetes-style memory quantity into bytes for Docker.
-
-    Returns:
-        int: Memory quantity in bytes.
-
-    Raises:
-        ValueError: If the input memory quantity has an unsupported format.
-
-    """
-    normalized = str(memory_limit).strip()
-    match = MEMORY_LIMIT_RE.fullmatch(normalized)
-    if not match:
-        raise ValueError(f"Unsupported memory quantity: {memory_limit!r}")
-
-    value = float(match.group(1))
-    suffix = match.group(2).lower()
-    binary_factors = {
-        "": 1,
-        "k": 10**3,
-        "m": 10**6,
-        "g": 10**9,
-        "t": 10**12,
-        "p": 10**15,
-        "e": 10**18,
-        "ki": 1024,
-        "mi": 1024**2,
-        "gi": 1024**3,
-        "ti": 1024**4,
-        "pi": 1024**5,
-        "ei": 1024**6,
-    }
-    return int(value * binary_factors[suffix])
-
-
-def _to_docker_mem_limit(value: MemoryLimit | str | int | float) -> str:
-    """Convert memory values into Docker-compatible mem_limit string.
-
-    Docker expects values parseable by docker.utils.parse_bytes, e.g. "1024m"
-    or "8589934592b". We emit bytes with a trailing "b" for exact values.
-
-    Returns:
-        str: Docker-compatible memory limit string.
-
-    """
-    if isinstance(value, (int, float)):
-        return f"{int(value)}b"
-
-    normalized = str(value).strip()
-
-    # Already a Docker parse_bytes value (supports b, k, m, g).
-    lower = normalized.lower()
-    docker_match = re.fullmatch(r"\d+(?:\.\d+)?[bkmg]", lower)
-    if docker_match:
-        return lower
-
-    try:
-        as_memory = MemoryLimit(normalized)
-    except ValueError:
-        # Preserve caller-supplied Docker-style values (e.g. "8g", "1024m").
-        return normalized
-
-    # Preserve decimal SI units directly when Docker can parse them.
-    quantity_match = MEMORY_LIMIT_RE.fullmatch(str(as_memory).strip())
-    if quantity_match:
-        number = quantity_match.group(1)
-        suffix = quantity_match.group(2).lower()
-        if suffix in {"k", "m", "g"}:
-            return f"{number}{suffix}"
-
-    return f"{_memory_quantity_to_bytes(as_memory)}b"
-
-
-def build_universal_job_vars(
+def _build_universal_job_vars(
     memory_limit: MemoryLimit | str | None = None, base_vars: dict | None = None
 ) -> dict | None:
     """Build a job_variables payload for Kubernetes-style memory input.
@@ -476,7 +383,7 @@ async def deploy_flow(
                 deployment_filter=DeploymentFilter(name=DeploymentFilterName(any_=[deployment_name])),
                 sort=DeploymentSort.CREATED_DESC,
             )
-            if deployments and is_semantic_version(version_name):
+            if deployments and _is_semantic_version(version_name):
                 raise RuntimeError(f"Prefect flow cannot be overwritten for semantic version '{deployment_name}'")
     except (PrefectHTTPStatusError, httpx.RequestError) as exc:
         _raise_prefect_api_error(exc)
@@ -507,7 +414,7 @@ SEMVER_REGEX = re.compile(
 )
 
 
-def is_semantic_version(version_name: str) -> bool:
+def _is_semantic_version(version_name: str) -> bool:
     """Return whether a version string follows Semantic Versioning.
 
     Returns:
@@ -598,8 +505,19 @@ def from_prefect_state_type_to_job_status(prefect_state_type: StateType) -> JobS
 
 async def get_flow_run_status_and_results(
     flow_run_id: str | UUID,
+    minio_host: str,
+    minio_port: str,
+    access_key: str,
+    secret_key: str,
 ) -> tuple[str, StateType, dict[str, Any], dict[str, str], dict[str, dict[str, Any]], str]:
     """Fetch detailed information for a specific Prefect flow run by ID.
+
+    Args:
+        flow_run_id: The UUID or string ID of the flow run.
+        minio_host: MinIO host for direct authenticated artifact access.
+        minio_port: MinIO port for direct authenticated artifact access.
+        access_key: MinIO access key for authenticated access.
+        secret_key: MinIO secret key for authenticated access.
 
     Returns:
         tuple[str, StateType, dict[str, Any], dict[str, str], dict[str, dict[str, Any]], str]:
@@ -635,7 +553,13 @@ async def get_flow_run_status_and_results(
             artifacts_by_key: dict[str, dict[str, Any]] = {}
             for artifact in artifacts:
                 artifact_key = artifact.key or str(artifact.id)
-                artifact_data = await _resolve_artifact_data(artifact.data)
+                artifact_data = await _resolve_artifact_data(
+                    artifact.data,
+                    minio_host=minio_host,
+                    minio_port=minio_port,
+                    access_key=access_key,
+                    secret_key=secret_key,
+                )
 
                 artifacts_by_key[artifact_key] = {
                     "data": artifact_data,
@@ -680,32 +604,47 @@ _MINIO_MARKDOWN_LINK_RE = re.compile(r"^\[(?P<label>.*?)\]\((?P<url>https?://[^)
 _MINIO_URL_RE = re.compile(r"^['\"]?(?P<url>https?://[^'\"]+)['\"]?$")
 
 
-async def _resolve_artifact_data(data: object) -> object:
+async def _resolve_artifact_data(
+    data: object,
+    minio_host: str,
+    minio_port: str | int,
+    access_key: str,
+    secret_key: str,
+) -> object:
+    """Resolve artifact data using authenticated MinIO access.
+
+    JSON strings are decoded: MinIO links are read directly without using the auth signature in the presigned URL which
+    can expire.
+
+    Returns:
+        object: Resolved artifact data (JSON dict, string, or raw object).
+    """
     if not isinstance(data, str):
         return data
 
     stripped_data = data.strip()
     markdown_match = _MINIO_MARKDOWN_LINK_RE.match(stripped_data)
-    if markdown_match is not None:
-        stripped_data = markdown_match.group("url")
+    artifact_value = markdown_match.group("url") if markdown_match is not None else stripped_data
 
-    url_match = _MINIO_URL_RE.match(stripped_data)
-    if url_match is not None:
-        url = url_match.group("url")
-        async with httpx.AsyncClient(follow_redirects=True, timeout=60.0) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            downloaded_data = response.text
-
+    url_match = _MINIO_URL_RE.match(artifact_value)
+    if url_match is None:
         try:
-            return json.loads(downloaded_data)
+            return json.loads(stripped_data)
         except json.JSONDecodeError:
-            return downloaded_data
+            return data
 
+    url = url_match.group("url")
+    minio_block = _build_minio_result_storage(minio_host, minio_port, access_key, secret_key)
+    storage_url = urlsplit(minio_block.basepath)
+    storage_path = "/".join(part for part in (storage_url.netloc, storage_url.path.strip("/")) if part)
+    object_path = urlsplit(url).path.removeprefix(f"/{storage_path}/")
+    read_result = minio_block.read_path(object_path)
+    downloaded_bytes = read_result if isinstance(read_result, bytes) else await read_result
+    downloaded_data = downloaded_bytes.decode("utf-8")
     try:
-        return json.loads(stripped_data)
+        return json.loads(downloaded_data)
     except json.JSONDecodeError:
-        return data
+        return downloaded_data
 
 
 async def trigger_flow_run(
@@ -763,7 +702,7 @@ async def trigger_flow_run(
                 parameters=parameters or {},
                 name=run_name,
                 tags=resolved_run_tags,
-                job_variables=build_universal_job_vars(memory_limit=memory_limit, base_vars=job_variables),
+                job_variables=_build_universal_job_vars(memory_limit=memory_limit, base_vars=job_variables),
             )
             logging.info(
                 f"✅ Created flow run '{run_name}' from '{deployment_name}' → Run ID: {flow_run.id}; "
