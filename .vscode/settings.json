@@ -1,23 +1,23 @@
 {
+  "flake8.enabled": false,
   "[python]": {
-    "editor.formatOnSave": true,
-    "editor.defaultFormatter": "ms-python.black-formatter",
+    "editor.defaultFormatter": "charliermarsh.ruff",
     "editor.codeActionsOnSave": {
-      "source.organizeImports": true
-    },
+      "source.fixAll.ruff": "always",
+      "source.organizeImports.ruff": "explicit"
+    }
   },
   "python.analysis.typeCheckingMode": "basic",
   "python.testing.unittestArgs": [
     "-v",
     "-s",
-    "./unit_test",
+    "./tests",
     "-p",
     "test_*.py"
   ],
   "python.testing.pytestEnabled": true,
   "python.testing.unittestEnabled": false,
   "python.testing.autoTestDiscoverOnSaveEnabled": true,
-  "mypy.runUsingActiveInterpreter": true,
   "isort.args": [
     "--profile",
     "black"
@@ -25,4 +25,24 @@
   "terminal.integrated.env.windows": {
     "PYTHONPATH": "${workspaceFolder}/src"
   },
+  "python.languageServer": "None", // disable Pylance (ruff/ty is used)
+  "ty.diagnosticMode": "workspace",
+  "ty.importStrategy": "fromEnvironment",
+  "ty.interpreter": "${workspaceFolder}/.venv/bin/python",
+  "ruff.organizeImports": true,
+  "ruff.lint.enable": true,
+  "[just]": {
+    "editor.formatOnSave": false,
+    "editor.defaultFormatter": null
+  },
+  "files.associations": {
+    "justfile": "just",
+    "*.just": "just"
+  },
+  "chat.tools.terminal.autoApprove": {
+    "/^python - <<'PY'\nimport inspect\nfrom prefect\\.client\\.orchestration import PrefectClient\nmethods = \\[name for name in dir\\(PrefectClient\\) if 'flow_run' in name\\.lower\\(\\) or 'delete' in name\\.lower\\(\\)\\]\nprint\\('\\\\n'\\.join\\(sorted\\(methods\\)\\)\\)\nPY$/": {
+      "approve": true,
+      "matchCommandLine": true
+    }
+  }
 }

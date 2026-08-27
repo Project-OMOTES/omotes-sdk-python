@@ -1,0 +1,90 @@
+name: Build-Test-Lint-Security-Typecheck
+
+on: [push]
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.13"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v2
+      - name: Install just
+        uses: taiki-e/install-action@just
+      - name: Install dependencies
+        run: just install
+      - name: Run linter
+        run: just lint
+      - name: Check formatting
+        run: just format-check
+
+  security:
+    name: Security Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.13"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v2
+      - name: Install just
+        uses: taiki-e/install-action@just
+      - name: Install dependencies
+        run: just install
+      - name: Run security checks
+        run: just security
+
+  test:
+    name: Test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install uv
+        uses: astral-sh/setup-uv@v2
+      - name: Install just
+        uses: taiki-e/install-action@just
+      - name: Install dependencies
+        run: just install
+      - name: Run unit tests
+        run: just test
+      - name: Publish test results
+        if: always()
+        uses: pmeier/pytest-results-action@main
+        with:
+          path: test-results.xml
+          summary: true
+          display-options: fEX
+          fail-on-empty: true
+
+  typecheck:
+    name: Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.13"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v2
+      - name: Install just
+        uses: taiki-e/install-action@just
+      - name: Install dependencies
+        run: just install
+      - name: Run type checker
+        run: just typecheck

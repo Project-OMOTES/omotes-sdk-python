@@ -1,29 +1,68 @@
 # OMOTES SDK Python
 
-This repository is part of the 'Nieuwe Warmte Nu Design Toolkit' project. 
+This repository is part of the 'Nieuwe Warmte Nu Design Toolkit' project.
 
 Python implementation of the OMOTES SDK through jobs which may be submitted, receive status updates for submitted jobs or delete submitted jobs.
 
-## Protobuf
-Please install `protoc` on your machine and make sure it is available in your `PATH`.  
-Version 25.2 is used: https://github.com/protocolbuffers/protobuf/releases/tag/v25.2.
+## Development
 
-Installation example - Linux
+### Tools
 
-1. Manually download the release zip file corresponding to your operating system and computer architecture (`protoc-<version>-<os>-<arch>.zip`) from github, or fetch the file using the command below.
+This project uses:
 
-    ```
-    wget https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-x86_64.zip
-    ```
+- **uv**: Fast Python package manager and resolver. Install via [https://docs.astral.sh/uv/](https://docs.astral.sh/uv/)
+- **just**: Command runner for common tasks (similar to Make). Install via [https://github.com/casey/just](https://github.com/casey/just)
 
-2. Unzip the file under `$HOME/.local` or a directory of your choice
+### Setup
 
-    ```
-    unzip protoc-25.2-linux-x86_64.zip -d $HOME/.local
-    ```
+Install dependencies and update `uv.lock` file after updating `pyproject.toml` dependencies:
 
-3. Update your environment `PATH` variable to include the path to the protoc executable.
+```bash
+uv sync
+```
 
-    ```
-    export PATH="$PATH:$HOME/.local/bin"
-    ```
+### Lint/typecheck/test locally
+
+Run via just (also used in github actions):
+
+```bash
+just ci            # run all CI checks (lint, security, format-check, typecheck, test)
+
+just lint          # ruff checks
+just security      # ruff security
+just format        # ruff format
+just format-check  # verify formatting
+just typecheck     # ty type checking
+just test          # pytest
+```
+
+To debug test go to the debug view in vscode and run "pytest".
+
+## Project Structure
+
+```text
+omotes-sdk-python/
+├── src/
+│   ├── omotes_sdk/
+│   │   ├── __init__.py          # Package exports and version metadata
+│   │   ├── esdl_messages.py     # ESDL-related message models/utilities
+│   │   ├── job_status.py        # Job status enum and mappings
+│   │   ├── log_forwarding.py    # Logging forwarder and queue handling
+│   │   ├── memory_quantity.py   # Memory quantity parsing/conversion helpers
+│   │   └── prefect_util.py      # Prefect deployment/run/status helper functions
+│   └── omotes_sdk_python.egg-info/
+│       ├── PKG-INFO
+│       ├── SOURCES.txt
+│       ├── dependency_links.txt
+│       ├── requires.txt
+│       └── top_level.txt
+├── tests/
+│   ├── test_log_forwarding.py   # Tests for log forwarding behavior
+│   └── test_prefect_util.py     # Tests for Prefect utility behavior
+├── justfile                     # Task runner commands
+├── pyproject.toml               # Project metadata and dependencies
+├── CHANGELOG.md                 # Release notes
+├── CONTRIBUTING.md              # Contribution guidelines
+├── LICENSE
+└── README.md
+```

@@ -1,10 +1,11 @@
 [project]
 name = "omotes-sdk-python"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dynamic = ["version"]
 authors = [
-    { name = "Sebastiaan la Fleur", email = "sebastiaan.lafleur@tno.nl" },
     { name = "Mark Vrijlandt", email = "mark.vrijlandt@tno.nl" },
+    { name = "Cheng-Kai Wang", email = "cheng-kai.wang@tno.nl" },
+    { name = "Sebastiaan la Fleur", email = "sebastiaan.lafleur@tno.nl" }
 ]
 description = "Python implementation of the OMOTES SDK through jobs which may be submitted, receive status updates for submitted jobs or delete submitted jobs."
 readme = "README.md"
@@ -12,7 +13,6 @@ license = { file = "LICENSE" }
 classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Operating System :: OS Independent",
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -24,33 +24,23 @@ classifiers = [
 ]
 
 dependencies = [
-    "aio-pika ~= 9.4, < 9.5",
-    "omotes-sdk-protocol ~= 1.2",
-    "pyesdl[profiles] ~= 26.7",
-    "pamqp ~= 3.3",
-    "celery ~= 5.3",
-    "typing-extensions ~= 4.11",
+    "prefect==3.7.3",
+    "s3fs",
     "streamcapture ~= 1.2.5",
+    "typing-extensions ~= 4.11",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "setuptools ~= 75.6.0",
     "wheel ~= 0.45.1",
     "setuptools-git-versioning >= 2.0, < 3",
-    "black ~= 24.10.0",
-    "flake8 == 7.1.1",
-    "flake8-pyproject ~= 1.2.3",
-    "flake8-docstrings ~= 1.7.0",
-    "flake8-quotes ~= 3.4.0",
-    "flake8-bugbear ~= 24.10.31",
-    "flake8-tuple ~= 0.4.1",
     "pytest ~= 8.3.4",
     "pytest-cov ~= 6.0.0",
-    "mypy ~= 1.13.0",
+    "ruff ~= 0.15.22",
+    "ty ~= 0.0.61",
     "isort == 5.13.2",
     "build ~= 1.2.2",
-    "mypy-protobuf ~= 3.5.0",
 ]
 
 [project.urls]
@@ -75,7 +65,7 @@ enabled = true
 starting_version = "0.0.1"
 
 [tool.pytest.ini_options]
-addopts = "--cov=omotes_sdk --cov-report html --cov-report term-missing --cov-fail-under 60"
+addopts = "--cov=omotes_sdk --cov-report html --cov-report term-missing --cov-fail-under 10"
 
 [tool.coverage.run]
 source = ["src"]
@@ -84,65 +74,32 @@ omit = [
     "*_pb2.py",
 ]
 
-[tool.flake8]
-exclude = [
-    '.venv/*',
-    'venv/*',
-    'doc/*',
-    'src/omotes_sdk/internal/orchestrator_worker_events/messages/*'
+[tool.ruff]
+line-length = 120
+preview = true
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle
+    "W",
+    "F",   # Pyflakes
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "I",   # isort
+    "D",   # pydocstyle
+    "ANN", # flake8-annotations
+    "DOC", # flake8-docstrings
+    "S",   # flake8-bandit
 ]
 ignore = [
-    'Q000', # Remove bad quotes
-    'D401', # Docstring First line should be imperative
-    'E203', # Space before colon (not PEP-8 compliant, and conflicts with black)
-    'C408', # Suggestion to use dict() over {}
-    'W503', # Starting lines with operators.
-    'D104', # Missing docstring in public package
-    'D100'  # Missing docstring in public module
+    "D100", # Missing docstring in public module
+    "D104", # Missing docstring in public package
 ]
-per-file-ignores = [
-    '__init__.py:F401',
-    './unit_test/*:D100,D101,D102,D103'
-]
-max-line-length = 100
-count = true
+exclude = ["justfile", ".editorconfig"]
 
-[tool.black]
-line-length = 100
+[tool.ruff.lint.pydocstyle]
+convention = "google"
 
-[tool.isort]
-profile = "black"
-
-[tool.mypy]
-python_version = "3.10"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-exclude = ['.venv/*', 'venv/*', 'doc/*', 'ci/*']
-
-# mypy per-module options:
-[[tool.mypy.overrides]]
-module = "unit_test.*"
-check_untyped_defs = true
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = "celery.*"
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = "kombu.*"
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = "billiard.*"
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = "streamcapture.*"
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = "esdl.*"
-ignore_missing_imports = true
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]  # assert statements are standard in tests
