@@ -1,7 +1,7 @@
 # ruff: noqa: D103
 
 import asyncio
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from prefect.states import StateType
@@ -11,6 +11,7 @@ from omotes_sdk.job_status import JobStatus
 from omotes_sdk.memory_quantity import _memory_quantity_to_bytes
 from omotes_sdk.prefect_util import (
     _build_universal_job_vars,
+    _create_minio_presigned_url,
     _get_required_file_extension,
     _is_semantic_version,
     _resolve_artifact_data,
@@ -218,6 +219,29 @@ def test_resolve_artifact_data_returns_original_for_non_json_string() -> None:
     raw_data = "not json"
 
     assert asyncio.run(_resolve_artifact_data(raw_data, "minio.example.com", 9000, "key", "secret")) == raw_data
+
+
+def test_create_minio_presigned_url_uses_external_block() -> None:
+    class _FileSystem:
+        def sign(self, path: str, expiration: int) -> str:
+            assert path == "prefect-results/flow-results/result.json"
+            assert expiration == 60
+            return "https://minio.example.com/result.json"
+
+    class _MinioBlock:
+        filesystem = _FileSystem()
+
+        def _resolve_path(self, object_path: str) -> str:
+            return f"prefect-results/flow-results/{object_path}"
+
+    assert (
+        _create_minio_presigned_url(
+            cast(Any, _MinioBlock()),
+            "result.json",
+            expires_seconds=60,
+        )
+        == "https://minio.example.com/result.json"
+    )
 
 
 def test_get_runs_returns_all_flow_runs(monkeypatch: pytest.MonkeyPatch) -> None:
