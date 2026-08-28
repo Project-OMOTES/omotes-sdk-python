@@ -39,8 +39,7 @@ from omotes_sdk.memory_quantity import (
 
 
 def _build_minio_result_storage(
-    minio_host: str,
-    minio_port: str | int,
+    minio_url: str,
     access_key: str,
     secret_key: str,
     bucket: str = "prefect-results",
@@ -52,14 +51,12 @@ def _build_minio_result_storage(
         RemoteFileSystem: Configured Prefect result storage block.
 
     """
-    endpoint_url = f"http://{minio_host}:{minio_port}"
-
     return RemoteFileSystem(
         basepath=f"s3://{bucket}/{prefix}",
         settings={
             "key": access_key,
             "secret": secret_key,
-            "client_kwargs": {"endpoint_url": endpoint_url},
+            "client_kwargs": {"endpoint_url": minio_url},
         },
     )
 
@@ -210,12 +207,12 @@ def write_flow_return_artifact_to_minio(
     minio_port: str,
     access_key: str,
     secret_key: str,
-    minio_host_external: str,
+    minio_external_url: str,
 ) -> str | None:
     """Persist flow return fields to MinIO and publish Prefect links to those objects.
 
     ``minio_host`` is used for storage operations from the worker, while
-    ``minio_host_external`` is used to generate browser-accessible URLs.
+    ``minio_external_url`` is the complete URL used to generate browser-accessible URLs.
 
     Returns:
         str | None: Run folder path in MinIO, or None if not in flow context.
@@ -224,8 +221,8 @@ def write_flow_return_artifact_to_minio(
     if not in_prefect_flow_context():
         return None
 
-    minio_block = _build_minio_result_storage(minio_host, minio_port, access_key, secret_key)
-    external_minio_block = _build_minio_result_storage(minio_host_external, minio_port, access_key, secret_key)
+    minio_block = _build_minio_result_storage(f"http://{minio_host}:{minio_port}", access_key, secret_key)
+    external_minio_block = _build_minio_result_storage(minio_external_url, access_key, secret_key)
     run_folder_path = _sanitize_for_minio(f"{flow_run.get_name()}-{_get_flow_run_id_first_part()}")
 
     for field_name, field_value in flow_result:
@@ -639,7 +636,7 @@ async def _resolve_artifact_data(
             return data
 
     url = url_match.group("url")
-    minio_block = _build_minio_result_storage(minio_host, minio_port, access_key, secret_key)
+    minio_block = _build_minio_result_storage(f"http://{minio_host}:{minio_port}", access_key, secret_key)
     storage_url = urlsplit(minio_block.basepath)
     storage_path = "/".join(part for part in (storage_url.netloc, storage_url.path.strip("/")) if part)
     object_path = urlsplit(url).path.removeprefix(f"/{storage_path}/")
