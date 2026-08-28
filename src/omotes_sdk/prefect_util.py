@@ -210,8 +210,12 @@ def write_flow_return_artifact_to_minio(
     minio_port: str,
     access_key: str,
     secret_key: str,
+    minio_host_external: str,
 ) -> str | None:
     """Persist flow return fields to MinIO and publish Prefect links to those objects.
+
+    ``minio_host`` is used for storage operations from the worker, while
+    ``minio_host_external`` is used to generate browser-accessible URLs.
 
     Returns:
         str | None: Run folder path in MinIO, or None if not in flow context.
@@ -221,6 +225,7 @@ def write_flow_return_artifact_to_minio(
         return None
 
     minio_block = _build_minio_result_storage(minio_host, minio_port, access_key, secret_key)
+    external_minio_block = _build_minio_result_storage(minio_host_external, minio_port, access_key, secret_key)
     run_folder_path = _sanitize_for_minio(f"{flow_run.get_name()}-{_get_flow_run_id_first_part()}")
 
     for field_name, field_value in flow_result:
@@ -243,7 +248,7 @@ def write_flow_return_artifact_to_minio(
             logging.exception("Failed to persist flow return field '%s' to MinIO", field_name)
             continue
 
-        presigned_url = _create_minio_presigned_url(minio_block, field_object_path)
+        presigned_url = _create_minio_presigned_url(external_minio_block, field_object_path)
         if presigned_url is None:
             continue
 
