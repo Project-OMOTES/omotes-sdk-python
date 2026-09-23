@@ -2,7 +2,13 @@
 
 This repository is part of the 'Nieuwe Warmte Nu Design Toolkit' project.
 
-Python implementation of the OMOTES SDK through jobs which may be submitted, receive status updates for submitted jobs or delete submitted jobs.
+Python implementation of the OMOTES SDK through jobs which may be submitted, receive status updates for submitted jobs
+or delete submitted jobs.
+
+## Job cleanup resources
+
+Workers can add resource to be cleaned up on job deletion to the Prefect run metadata. The orchestrator removed the
+resources to be cleaned up on job deletion.
 
 ## Development
 
@@ -11,7 +17,8 @@ Python implementation of the OMOTES SDK through jobs which may be submitted, rec
 This project uses:
 
 - **uv**: Fast Python package manager and resolver. Install via [https://docs.astral.sh/uv/](https://docs.astral.sh/uv/)
-- **just**: Command runner for common tasks (similar to Make). Install via [https://github.com/casey/just](https://github.com/casey/just)
+- **just**: Command runner for common tasks (similar to Make). Install via
+  [https://github.com/casey/just](https://github.com/casey/just)
 
 ### Setup
 

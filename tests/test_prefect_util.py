@@ -2,6 +2,7 @@
 
 import asyncio
 from typing import Any, cast
+from unittest.mock import Mock
 
 import pytest
 from prefect.states import StateType
@@ -10,6 +11,10 @@ from pydantic import BaseModel, Field
 from omotes_sdk.job_status import JobStatus
 from omotes_sdk.memory_quantity import _memory_quantity_to_bytes
 from omotes_sdk.prefect_util import (
+    JOB_CLEANUP_RESOURCES_ARTIFACT_KEY,
+    JobCleanupResources,
+    MinioResource,
+    TimeseriesResource,
     _build_universal_job_vars,
     _create_minio_presigned_url,
     _get_required_file_extension,
@@ -21,6 +26,8 @@ from omotes_sdk.prefect_util import (
     create_flow_progress_updater,
     from_prefect_state_type_to_job_status,
     get_runs,
+    publish_job_cleanup_resource,
+    write_flow_return_artifact_to_minio,
 )
 
 
@@ -30,6 +37,114 @@ class _ResultWithExtensions(BaseModel):
 
 class _ResultWithoutExtensions(BaseModel):
     report: str
+
+
+def test_publish_job_cleanup_resource(monkeypatch: pytest.MonkeyPatch) -> None:
+    create_artifact_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("omotes_sdk.prefect_util.in_prefect_flow_context", lambda: True)
+    monkeypatch.setattr(
+        "omotes_sdk.prefect_util.create_table_artifact",
+        lambda **kwargs: create_artifact_calls.append(kwargs),
+    )
+
+    publish_job_cleanup_resource(
+        TimeseriesResource(
+            type="postgresql",
+            host="postgres",
+            port=5432,
+            database="timeseries",
+            schema_name="output-esdl-id",
+        )
+    )
+
+    assert create_artifact_calls == [
+        {
+            "table": [
+                {
+                    "version": 1,
+                    "resources": [
+                        {
+                            "type": "postgresql",
+                            "host": "postgres",
+                            "port": 5432,
+                            "database": "timeseries",
+                            "schema": "output-esdl-id",
+                        },
+                    ],
+                }
+            ],
+            "key": JOB_CLEANUP_RESOURCES_ARTIFACT_KEY,
+            "description": "Resources to remove when deleting this job.",
+        }
+    ]
+
+
+def test_job_cleanup_resources_parses_published_payload() -> None:
+    cleanup_resources = JobCleanupResources.model_validate({
+        "version": 1,
+        "resources": [
+            {
+                "type": "postgresql",
+                "host": "postgres",
+                "port": 5432,
+                "database": "timeseries",
+                "schema": "output-esdl-id",
+            }
+        ],
+    })
+
+    resource = cleanup_resources.resources[0]
+    assert isinstance(resource, TimeseriesResource)
+    assert resource.schema_name == "output-esdl-id"
+
+
+def test_publish_job_cleanup_resource_suppresses_prefect_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr("omotes_sdk.prefect_util.in_prefect_flow_context", lambda: True)
+    monkeypatch.setattr(
+        "omotes_sdk.prefect_util.create_table_artifact",
+        Mock(side_effect=RuntimeError("Prefect unavailable")),
+    )
+
+    with caplog.at_level("ERROR"):
+        publish_job_cleanup_resource(MinioResource(host="minio", port=9000, path="flow-results/run-id"))
+
+    assert "Failed to publish job cleanup resources" in caplog.text
+
+
+def test_write_flow_result_registers_minio_before_writing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    minio_block = Mock()
+    minio_block.write_path.side_effect = lambda **kwargs: events.append("write")
+    external_minio_block = Mock()
+    monkeypatch.setattr("omotes_sdk.prefect_util.in_prefect_flow_context", lambda: True)
+    monkeypatch.setattr("omotes_sdk.prefect_util.flow_run.get_name", lambda: "Flow Run")
+    monkeypatch.setattr("omotes_sdk.prefect_util.flow_run.id", "abcd1234-rest")
+    monkeypatch.setattr(
+        "omotes_sdk.prefect_util._build_minio_result_storage",
+        Mock(side_effect=[minio_block, external_minio_block]),
+    )
+    monkeypatch.setattr(
+        "omotes_sdk.prefect_util.publish_job_cleanup_resource",
+        lambda resource: events.append(f"publish:{resource.path}"),
+    )
+    monkeypatch.setattr("omotes_sdk.prefect_util._create_minio_presigned_url", lambda *args: None)
+
+    run_folder = write_flow_return_artifact_to_minio(
+        _ResultWithExtensions(report="{}"),
+        "minio",
+        "9000",
+        "access",
+        "secret",
+        "http://localhost:9000",
+    )
+
+    assert run_folder == "flow-run-abcd1234"
+    assert events == ["publish:flow-results/flow-run-abcd1234", "write"]
 
 
 @pytest.mark.parametrize(
