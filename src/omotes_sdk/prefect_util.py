@@ -39,6 +39,7 @@ from omotes_sdk.memory_quantity import (
 )
 
 JOB_CLEANUP_RESOURCES_ARTIFACT_KEY = "job-cleanup-resources"
+FLOW_RESULTS_PREFIX = "flow-results"
 
 
 class MinioResource(BaseModel):
@@ -93,7 +94,7 @@ def _build_minio_result_storage(
     access_key: str,
     secret_key: str,
     bucket: str = "prefect-results",
-    prefix: str = "flow-results",
+    prefix: str = FLOW_RESULTS_PREFIX,
 ) -> RemoteFileSystem:
     """Create MinIO-backed Prefect result storage block when env vars are available.
 
@@ -258,11 +259,13 @@ def write_flow_return_artifact_to_minio(
     access_key: str,
     secret_key: str,
     minio_external_url: str,
+    flow_results_prefix: str = FLOW_RESULTS_PREFIX,
 ) -> str | None:
     """Persist flow return fields to MinIO and publish Prefect links to those objects.
 
     ``minio_host`` is used for storage operations from the worker, while
     ``minio_external_url`` is the complete URL used to generate browser-accessible URLs.
+    ``flow_results_prefix`` selects the MinIO prefix used for the flow result files.
 
     Returns:
         str | None: Run folder path in MinIO, or None if not in flow context.
@@ -276,11 +279,21 @@ def write_flow_return_artifact_to_minio(
         MinioResource(
             host=minio_host,
             port=int(minio_port),
-            path=f"flow-results/{run_folder_path}",
+            path=f"{flow_results_prefix}/{run_folder_path}",
         )
     )
-    minio_block = _build_minio_result_storage(f"http://{minio_host}:{minio_port}", access_key, secret_key)
-    external_minio_block = _build_minio_result_storage(minio_external_url, access_key, secret_key)
+    minio_block = _build_minio_result_storage(
+        f"http://{minio_host}:{minio_port}",
+        access_key,
+        secret_key,
+        prefix=flow_results_prefix,
+    )
+    external_minio_block = _build_minio_result_storage(
+        minio_external_url,
+        access_key,
+        secret_key,
+        prefix=flow_results_prefix,
+    )
 
     for field_name, field_value in flow_result:
         if field_value is None:
