@@ -3,7 +3,7 @@ import logging
 import os
 import re
 from collections.abc import Callable
-from typing import Any, NoReturn, cast
+from typing import Any, Literal, NoReturn, cast
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -11,6 +11,7 @@ import httpx
 from prefect.artifacts import (
     create_link_artifact,
     create_progress_artifact,
+    create_table_artifact,
     update_progress_artifact,
 )
 from prefect.blocks.system import Secret
@@ -29,7 +30,7 @@ from prefect.exceptions import ObjectNotFound, PrefectHTTPStatusError
 from prefect.filesystems import RemoteFileSystem
 from prefect.runtime import flow_run
 from prefect.states import StateType
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from omotes_sdk.job_status import JobStatus
 from omotes_sdk.memory_quantity import (
@@ -37,13 +38,63 @@ from omotes_sdk.memory_quantity import (
     _to_docker_mem_limit,
 )
 
+JOB_CLEANUP_RESOURCES_ARTIFACT_KEY = "job-cleanup-resources"
+FLOW_RESULTS_PREFIX = "flow-results"
+
+
+class MinioResource(BaseModel):
+    """MinIO resource to remove when deleting a job."""
+
+    type: Literal["minio"] = "minio"
+    host: str
+    port: int
+    bucket: str = "prefect-results"
+    path: str
+
+
+class TimeseriesResource(BaseModel):
+    """Timeseries resource to remove when deleting a job."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    type: Literal["postgresql", "influxdb"]
+    host: str
+    port: int
+    database: str
+    schema_name: str | None = Field(default=None, alias="schema")
+
+
+class JobCleanupResources(BaseModel):
+    """Credential-free locations of resources to remove when deleting a job."""
+
+    version: Literal[1] = 1
+    resources: list[MinioResource | TimeseriesResource]
+
+
+def publish_job_cleanup_resource(
+    resource: MinioResource | TimeseriesResource,
+) -> None:
+    """Best-effort attach a job cleanup resource to the current Prefect flow run."""
+    if not in_prefect_flow_context():
+        return
+
+    cleanup_resources = JobCleanupResources(resources=[resource])
+    try:
+        create_table_artifact(
+            table=[cleanup_resources.model_dump(mode="json", by_alias=True)],
+            key=JOB_CLEANUP_RESOURCES_ARTIFACT_KEY,
+            description="Resources to remove when deleting this job.",
+        )
+    except Exception:
+        logging.exception("Failed to publish job cleanup resources")
+
 
 def _build_minio_result_storage(
     minio_url: str,
     access_key: str,
     secret_key: str,
     bucket: str = "prefect-results",
-    prefix: str = "flow-results",
+    prefix: str = FLOW_RESULTS_PREFIX,
 ) -> RemoteFileSystem:
     """Create MinIO-backed Prefect result storage block when env vars are available.
 
@@ -208,11 +259,13 @@ def write_flow_return_artifact_to_minio(
     access_key: str,
     secret_key: str,
     minio_external_url: str,
+    flow_results_prefix: str = FLOW_RESULTS_PREFIX,
 ) -> str | None:
     """Persist flow return fields to MinIO and publish Prefect links to those objects.
 
     ``minio_host`` is used for storage operations from the worker, while
     ``minio_external_url`` is the complete URL used to generate browser-accessible URLs.
+    ``flow_results_prefix`` selects the MinIO prefix used for the flow result files.
 
     Returns:
         str | None: Run folder path in MinIO, or None if not in flow context.
@@ -221,9 +274,26 @@ def write_flow_return_artifact_to_minio(
     if not in_prefect_flow_context():
         return None
 
-    minio_block = _build_minio_result_storage(f"http://{minio_host}:{minio_port}", access_key, secret_key)
-    external_minio_block = _build_minio_result_storage(minio_external_url, access_key, secret_key)
     run_folder_path = _sanitize_for_minio(f"{flow_run.get_name()}-{_get_flow_run_id_first_part()}")
+    publish_job_cleanup_resource(
+        MinioResource(
+            host=minio_host,
+            port=int(minio_port),
+            path=f"{flow_results_prefix}/{run_folder_path}",
+        )
+    )
+    minio_block = _build_minio_result_storage(
+        f"http://{minio_host}:{minio_port}",
+        access_key,
+        secret_key,
+        prefix=flow_results_prefix,
+    )
+    external_minio_block = _build_minio_result_storage(
+        minio_external_url,
+        access_key,
+        secret_key,
+        prefix=flow_results_prefix,
+    )
 
     for field_name, field_value in flow_result:
         if field_value is None:
