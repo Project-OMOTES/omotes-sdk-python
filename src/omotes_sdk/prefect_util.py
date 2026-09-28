@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections.abc import Callable
 from typing import Any, Literal, NoReturn, cast
 from urllib.parse import urlsplit
@@ -11,7 +12,6 @@ import httpx
 from prefect.artifacts import (
     create_link_artifact,
     create_progress_artifact,
-    create_table_artifact,
     update_progress_artifact,
 )
 from prefect.blocks.system import Secret
@@ -38,7 +38,6 @@ from omotes_sdk.memory_quantity import (
     _to_docker_mem_limit,
 )
 
-JOB_CLEANUP_RESOURCES_ARTIFACT_KEY = "job-cleanup-resources"
 FLOW_RESULTS_PREFIX = "flow-results"
 
 
@@ -74,19 +73,47 @@ class JobCleanupResources(BaseModel):
 def publish_job_cleanup_resource(
     resource: MinioResource | TimeseriesResource,
 ) -> None:
-    """Best-effort attach a job cleanup resource to the current Prefect flow run."""
+    """Best-effort register a cleanup resource with the orchestrator."""
     if not in_prefect_flow_context():
         return
 
     cleanup_resources = JobCleanupResources(resources=[resource])
-    try:
-        create_table_artifact(
-            table=[cleanup_resources.model_dump(mode="json", by_alias=True)],
-            key=JOB_CLEANUP_RESOURCES_ARTIFACT_KEY,
-            description="Resources to remove when deleting this job.",
+    orchestrator_api_url = os.getenv("ORCHESTRATOR_API_URL")
+    flow_run_id = flow_run.id
+    job_name = flow_run.get_name()
+    if not orchestrator_api_url:
+        logging.error(
+            "Cannot register job cleanup resource job_id=%s job_name=%s: ORCHESTRATOR_API_URL is not configured",
+            flow_run_id,
+            job_name,
         )
-    except Exception:
-        logging.exception("Failed to publish job cleanup resources")
+        return
+    if flow_run_id is None:
+        logging.error(
+            "Cannot register job cleanup resource job_id=%s job_name=%s: Prefect flow run ID is unavailable",
+            flow_run_id,
+            job_name,
+        )
+        return
+
+    payload = cleanup_resources.model_dump(mode="json", by_alias=True)
+    for attempt in range(3):
+        try:
+            response = httpx.post(
+                f"{orchestrator_api_url.rstrip('/')}/job/{flow_run_id}/cleanup-resources",
+                json=payload,
+                timeout=5.0,
+            )
+            response.raise_for_status()
+            return
+        except (httpx.HTTPStatusError, httpx.RequestError):
+            if attempt < 2:
+                time.sleep(0.5)
+    logging.error(
+        "Failed to register job cleanup resources with the orchestrator job_id=%s job_name=%s",
+        flow_run_id,
+        job_name,
+    )
 
 
 def _build_minio_result_storage(
