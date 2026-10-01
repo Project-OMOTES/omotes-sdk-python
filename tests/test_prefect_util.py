@@ -2,9 +2,10 @@
 
 import asyncio
 from typing import Any, cast
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
+from prefect.exceptions import ObjectNotFound
 from prefect.states import StateType
 from pydantic import BaseModel, Field
 
@@ -25,6 +26,7 @@ from omotes_sdk.prefect_util import (
     _to_docker_mem_limit,
     _version_sort_key,
     create_flow_progress_updater,
+    deploy_flow,
     from_prefect_state_type_to_job_status,
     get_runs,
     load_input_esdl,
@@ -337,7 +339,7 @@ def test_version_sort_key_orders_semver_before_non_semver_and_stable_before_prer
     ("prefect_state", "expected_status"),
     [
         (StateType.PENDING, JobStatus.ENQUEUED),
-        (StateType.SCHEDULED, JobStatus.RUNNING),
+        (StateType.SCHEDULED, JobStatus.ENQUEUED),
         (StateType.RUNNING, JobStatus.RUNNING),
         (StateType.PAUSED, JobStatus.RUNNING),
         (StateType.COMPLETED, JobStatus.SUCCEEDED),
@@ -459,3 +461,80 @@ def test_get_runs_returns_empty_list_when_no_flow_runs(
     monkeypatch.setattr("omotes_sdk.prefect_util.get_client", lambda: _ClientContext())
 
     assert asyncio.run(get_runs()) == []
+
+
+def _patch_deploy_client(monkeypatch: pytest.MonkeyPatch, existing_queue: bool) -> AsyncMock:
+    client = AsyncMock()
+    client.read_deployments.return_value = []
+    if existing_queue:
+        client.read_work_queue_by_name.return_value = Mock(id="queue-id")
+    else:
+        client.read_work_queue_by_name.side_effect = ObjectNotFound(http_exc=Exception())
+
+    class _ClientContext:
+        async def __aenter__(self) -> AsyncMock:
+            return client
+
+        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> bool:
+            return False
+
+    monkeypatch.setattr("omotes_sdk.prefect_util.get_client", lambda: _ClientContext())
+    return client
+
+
+def test_deploy_flow_without_work_queue_limits_deployment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _patch_deploy_client(monkeypatch, existing_queue=False)
+    flow = Mock(deploy=AsyncMock())
+
+    asyncio.run(deploy_flow(flow, "worker:1.0.0", "image:1.0.0", {}, "pool", max_concurrent_runs=4))
+
+    client.read_work_queue_by_name.assert_not_called()
+    assert flow.deploy.await_args.kwargs["work_queue_name"] is None
+    assert flow.deploy.await_args.kwargs["concurrency_limit"] == 4
+
+
+def test_deploy_flow_creates_limited_work_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _patch_deploy_client(monkeypatch, existing_queue=False)
+    flow = Mock(deploy=AsyncMock())
+
+    asyncio.run(
+        deploy_flow(
+            flow,
+            "worker:1.0.0",
+            "image:1.0.0",
+            {},
+            "pool",
+            max_concurrent_runs=1,
+            work_queue_name="worker",
+        )
+    )
+
+    client.create_work_queue.assert_awaited_once_with("worker", work_pool_name="pool", concurrency_limit=1)
+    assert flow.deploy.await_args.kwargs["work_queue_name"] == "worker"
+    assert flow.deploy.await_args.kwargs["concurrency_limit"] is None
+
+
+def test_deploy_flow_updates_existing_work_queue_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _patch_deploy_client(monkeypatch, existing_queue=True)
+    flow = Mock(deploy=AsyncMock())
+
+    asyncio.run(
+        deploy_flow(
+            flow,
+            "worker:1.0.0",
+            "image:1.0.0",
+            {},
+            "pool",
+            max_concurrent_runs=2,
+            work_queue_name="worker",
+        )
+    )
+
+    client.create_work_queue.assert_not_called()
+    client.update_work_queue.assert_awaited_once_with("queue-id", concurrency_limit=2)
