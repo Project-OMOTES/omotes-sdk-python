@@ -15,7 +15,7 @@ from prefect.artifacts import (
     update_progress_artifact,
 )
 from prefect.blocks.system import Secret
-from prefect.client.orchestration import get_client
+from prefect.client.orchestration import PrefectClient, get_client
 from prefect.client.schemas.filters import (
     ArtifactFilter,
     ArtifactFilterFlowRunId,
@@ -499,6 +499,7 @@ async def deploy_flow(
     job_variables: dict,
     prefect_work_pool_name: str,
     max_concurrent_runs: int | None = None,
+    work_queue_name: str | None = None,
 ) -> None:
     """Deploy prefect flow with variables.
 
@@ -511,7 +512,9 @@ async def deploy_flow(
         image_name: Name of the Docker image.
         job_variables: Job variables.
         prefect_work_pool_name: Name of the Prefect work pool.
-        max_concurrent_runs: Maximum number of concurrent flow runs for this deployment.
+        max_concurrent_runs: Maximum number of concurrent flow runs. Without work_queue_name this limits this
+            deployment only; with work_queue_name it limits the work queue, so all deployments (versions) on it.
+        work_queue_name: Optional work queue in the work pool, created or updated with max_concurrent_runs.
 
     Raises:
         RuntimeError: If a semantic-versioned deployment already exists.
@@ -530,6 +533,9 @@ async def deploy_flow(
             )
             if deployments and _is_semantic_version(version_name):
                 raise RuntimeError(f"Prefect flow cannot be overwritten for semantic version '{deployment_name}'")
+
+            if work_queue_name is not None:
+                await _ensure_work_queue(client, work_queue_name, prefect_work_pool_name, max_concurrent_runs)
     except (PrefectHTTPStatusError, httpx.RequestError) as exc:
         _raise_prefect_api_error(exc)
 
@@ -537,11 +543,27 @@ async def deploy_flow(
     await deployable_flow.deploy(
         name=deployment_name,
         work_pool_name=prefect_work_pool_name,
+        work_queue_name=work_queue_name,
         image=image_name,
         build=False,
         job_variables=job_variables,
-        concurrency_limit=max_concurrent_runs,
+        concurrency_limit=None if work_queue_name is not None else max_concurrent_runs,
     )
+
+
+async def _ensure_work_queue(
+    client: PrefectClient,
+    name: str,
+    work_pool_name: str,
+    concurrency_limit: int | None,
+) -> None:
+    """Create the work queue in the pool, or reset the concurrency limit of an existing one."""
+    try:
+        queue = await client.read_work_queue_by_name(name, work_pool_name=work_pool_name)
+    except ObjectNotFound:
+        await client.create_work_queue(name, work_pool_name=work_pool_name, concurrency_limit=concurrency_limit)
+    else:
+        await client.update_work_queue(queue.id, concurrency_limit=concurrency_limit)
 
 
 # Support full semantic versions like 1.2.3-beta+exp.sha.5114f85
@@ -630,13 +652,9 @@ def from_prefect_state_type_to_job_status(prefect_state_type: StateType) -> JobS
     Raises:
         ValueError: If the Prefect state type is unexpected.
     """
-    if prefect_state_type in [StateType.PENDING]:
+    if prefect_state_type in [StateType.PENDING, StateType.SCHEDULED]:
         return JobStatus.ENQUEUED
-    elif prefect_state_type in [
-        StateType.SCHEDULED,
-        StateType.RUNNING,
-        StateType.PAUSED,
-    ]:
+    elif prefect_state_type in [StateType.RUNNING, StateType.PAUSED]:
         return JobStatus.RUNNING
     elif prefect_state_type in [StateType.COMPLETED]:
         return JobStatus.SUCCEEDED
