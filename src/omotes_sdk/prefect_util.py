@@ -39,6 +39,7 @@ from omotes_sdk.memory_quantity import (
 )
 
 FLOW_RESULTS_PREFIX = "flow-results"
+PREFECT_RESULTS_BUCKET = "prefect-results"
 
 
 class MinioResource(BaseModel):
@@ -47,7 +48,7 @@ class MinioResource(BaseModel):
     type: Literal["minio"] = "minio"
     host: str
     port: int
-    bucket: str = "prefect-results"
+    bucket: str = PREFECT_RESULTS_BUCKET
     path: str
 
 
@@ -120,7 +121,7 @@ def _build_minio_result_storage(
     minio_url: str,
     access_key: str,
     secret_key: str,
-    bucket: str = "prefect-results",
+    bucket: str = PREFECT_RESULTS_BUCKET,
     prefix: str = FLOW_RESULTS_PREFIX,
 ) -> RemoteFileSystem:
     """Create MinIO-backed Prefect result storage block when env vars are available.
@@ -279,6 +280,49 @@ def _get_required_file_extension(result: BaseModel, field_name: str) -> str:
     return extension.lower()
 
 
+def load_input_esdl(
+    input_esdl_minio_path: str,
+    minio_host: str,
+    minio_port: str,
+    access_key: str,
+    secret_key: str,
+) -> str:
+    """Return the input ESDL, reading it from MinIO when an `s3://` path is passed.
+
+    Values that are not an `s3://` path are returned unchanged as the ESDL XML string.
+
+    Returns:
+        The input ESDL XML string.
+
+    Raises:
+        TypeError: If the MinIO filesystem does not return bytes synchronously.
+        ValueError: If the object is outside one flow-results folder.
+    """
+    parsed = urlsplit(input_esdl_minio_path)
+    if parsed.scheme != "s3" or not parsed.netloc or not parsed.path.strip("/"):
+        return input_esdl_minio_path
+
+    object_path = parsed.path.lstrip("/")
+    run_folder = object_path.rsplit("/", 1)[0]
+    if not run_folder.startswith(f"{FLOW_RESULTS_PREFIX}/") or "/" in run_folder.removeprefix(
+        f"{FLOW_RESULTS_PREFIX}/"
+    ):
+        raise ValueError(f"Input ESDL MinIO path must be inside one {FLOW_RESULTS_PREFIX} folder: {object_path}")
+
+    minio_block = RemoteFileSystem(
+        basepath=f"s3://{parsed.netloc}",
+        settings={
+            "key": access_key,
+            "secret": secret_key,
+            "client_kwargs": {"endpoint_url": f"http://{minio_host}:{minio_port}"},
+        },
+    )
+    input_bytes = minio_block.read_path(object_path)
+    if not isinstance(input_bytes, bytes):
+        raise TypeError("MinIO input ESDL must be read synchronously")
+    return input_bytes.decode("utf-8")
+
+
 def write_flow_return_artifact_to_minio(
     flow_result: BaseModel,
     minio_host: str,
@@ -286,12 +330,14 @@ def write_flow_return_artifact_to_minio(
     access_key: str,
     secret_key: str,
     minio_external_url: str,
+    flow_results_folder: str,
     flow_results_prefix: str = FLOW_RESULTS_PREFIX,
 ) -> str | None:
     """Persist flow return fields to MinIO and publish Prefect links to those objects.
 
     ``minio_host`` is used for storage operations from the worker, while
     ``minio_external_url`` is the complete URL used to generate browser-accessible URLs.
+    ``flow_results_folder`` is the folder shared with the input ESDL.
     ``flow_results_prefix`` selects the MinIO prefix used for the flow result files.
 
     Returns:
@@ -301,7 +347,7 @@ def write_flow_return_artifact_to_minio(
     if not in_prefect_flow_context():
         return None
 
-    run_folder_path = _sanitize_for_minio(f"{flow_run.get_name()}-{_get_flow_run_id_first_part()}")
+    run_folder_path = flow_results_folder
     publish_job_cleanup_resource(
         MinioResource(
             host=minio_host,

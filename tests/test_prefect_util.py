@@ -12,6 +12,7 @@ from omotes_sdk.job_status import JobStatus
 from omotes_sdk.memory_quantity import _memory_quantity_to_bytes
 from omotes_sdk.prefect_util import (
     FLOW_RESULTS_PREFIX,
+    PREFECT_RESULTS_BUCKET,
     JobCleanupResources,
     MinioResource,
     TimeseriesResource,
@@ -26,6 +27,7 @@ from omotes_sdk.prefect_util import (
     create_flow_progress_updater,
     from_prefect_state_type_to_job_status,
     get_runs,
+    load_input_esdl,
     publish_job_cleanup_resource,
     write_flow_return_artifact_to_minio,
 )
@@ -70,7 +72,7 @@ def test_publish_job_cleanup_resource_registers_with_orchestrator(
     post = Mock(return_value=response)
     monkeypatch.setattr("omotes_sdk.prefect_util.httpx.post", post)
 
-    publish_job_cleanup_resource(MinioResource(host="minio", port=9000, path="flow-results/run-id"))
+    publish_job_cleanup_resource(MinioResource(host="minio", port=9000, path=f"{FLOW_RESULTS_PREFIX}/run-id"))
 
     post.assert_called_once_with(
         "http://orchestrator:9200/job/00000000-0000-0000-0000-000000000001/cleanup-resources",
@@ -81,8 +83,8 @@ def test_publish_job_cleanup_resource_registers_with_orchestrator(
                     "type": "minio",
                     "host": "minio",
                     "port": 9000,
-                    "bucket": "prefect-results",
-                    "path": "flow-results/run-id",
+                    "bucket": PREFECT_RESULTS_BUCKET,
+                    "path": f"{FLOW_RESULTS_PREFIX}/run-id",
                 }
             ],
         },
@@ -155,10 +157,58 @@ def test_write_flow_result_registers_minio_before_writing(
         "access",
         "secret",
         "http://localhost:9000",
+        "large-job-123",
     )
 
-    assert run_folder == "flow-run-abcd1234"
-    assert events == [f"publish:{FLOW_RESULTS_PREFIX}/flow-run-abcd1234", "write"]
+    assert run_folder == "large-job-123"
+    assert events == [f"publish:{FLOW_RESULTS_PREFIX}/large-job-123", "write"]
+
+
+def test_load_input_esdl_reads_minio_path_without_publishing_cleanup_resource(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    minio_block = Mock()
+    minio_block.read_path.return_value = b"<esdl />"
+    monkeypatch.setattr("omotes_sdk.prefect_util.RemoteFileSystem", Mock(return_value=minio_block))
+    publish_resource = Mock()
+    monkeypatch.setattr("omotes_sdk.prefect_util.publish_job_cleanup_resource", publish_resource)
+
+    result = load_input_esdl(
+        f"s3://{PREFECT_RESULTS_BUCKET}/{FLOW_RESULTS_PREFIX}/input-123/input.esdl",
+        "minio",
+        "9000",
+        "access",
+        "secret",
+    )
+
+    assert result == "<esdl />"
+    minio_block.read_path.assert_called_once_with(f"{FLOW_RESULTS_PREFIX}/input-123/input.esdl")
+    publish_resource.assert_not_called()
+
+
+def test_load_input_esdl_returns_non_s3_value_unchanged() -> None:
+    assert load_input_esdl("<esdl />", "minio", "9000", "access", "secret") == "<esdl />"
+
+
+@pytest.mark.parametrize(
+    "object_path",
+    [
+        "other/input-123/input.esdl",
+        f"{FLOW_RESULTS_PREFIX}/a/b/input.esdl",
+        f"{FLOW_RESULTS_PREFIX}/input.esdl",
+    ],
+)
+def test_load_input_esdl_rejects_path_outside_one_flow_results_folder(
+    object_path: str,
+) -> None:
+    with pytest.raises(ValueError, match="must be inside one"):
+        load_input_esdl(
+            f"s3://{PREFECT_RESULTS_BUCKET}/{object_path}",
+            "minio",
+            "9000",
+            "access",
+            "secret",
+        )
 
 
 @pytest.mark.parametrize(
@@ -320,7 +370,7 @@ def test_resolve_artifact_data_parses_json_strings() -> None:
 
 def test_resolve_artifact_data_reads_minio_url(monkeypatch: pytest.MonkeyPatch) -> None:
     class _MinioBlock:
-        basepath = f"s3://prefect-results/{FLOW_RESULTS_PREFIX}"
+        basepath = f"s3://{PREFECT_RESULTS_BUCKET}/{FLOW_RESULTS_PREFIX}"
         object_path: str | None = None
 
         async def read_path(self, object_path: str) -> bytes:
@@ -332,7 +382,7 @@ def test_resolve_artifact_data_reads_minio_url(monkeypatch: pytest.MonkeyPatch) 
 
     resolved = asyncio.run(
         _resolve_artifact_data(
-            f"http://minio.example.com:9000/prefect-results/{FLOW_RESULTS_PREFIX}/oo3-7314720b/output-esdl-7314720b.esdl?X-Amz-Signature=expired",
+            f"http://minio.example.com:9000/{PREFECT_RESULTS_BUCKET}/{FLOW_RESULTS_PREFIX}/oo3-7314720b/output-esdl-7314720b.esdl?X-Amz-Signature=expired",
             "minio.example.com",
             9000,
             "key",
@@ -353,7 +403,7 @@ def test_resolve_artifact_data_returns_original_for_non_json_string() -> None:
 def test_create_minio_presigned_url_uses_external_block() -> None:
     class _FileSystem:
         def sign(self, path: str, expiration: int) -> str:
-            assert path == f"prefect-results/{FLOW_RESULTS_PREFIX}/result.json"
+            assert path == f"{PREFECT_RESULTS_BUCKET}/{FLOW_RESULTS_PREFIX}/result.json"
             assert expiration == 60
             return "https://minio.example.com/result.json"
 
@@ -361,7 +411,7 @@ def test_create_minio_presigned_url_uses_external_block() -> None:
         filesystem = _FileSystem()
 
         def _resolve_path(self, object_path: str) -> str:
-            return f"prefect-results/{FLOW_RESULTS_PREFIX}/{object_path}"
+            return f"{PREFECT_RESULTS_BUCKET}/{FLOW_RESULTS_PREFIX}/{object_path}"
 
     assert (
         _create_minio_presigned_url(
