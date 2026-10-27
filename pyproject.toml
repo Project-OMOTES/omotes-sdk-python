@@ -25,7 +25,7 @@ classifiers = [
 
 dependencies = [
     "prefect==3.7.3",
-    "s3fs",
+    "s3fs>=2025.10",
     "streamcapture ~= 1.2.5",
     "typing-extensions ~= 4.11",
 ]
