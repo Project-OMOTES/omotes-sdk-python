@@ -42,10 +42,10 @@ FLOW_RESULTS_PREFIX = "flow-results"
 PREFECT_RESULTS_BUCKET = "prefect-results"
 
 
-class MinioResource(BaseModel):
-    """MinIO resource to remove when deleting a job."""
+class S3Resource(BaseModel):
+    """S3 resource to remove when deleting a job."""
 
-    type: Literal["minio"] = "minio"
+    type: Literal["s3"] = "s3"
     host: str
     port: int
     bucket: str = PREFECT_RESULTS_BUCKET
@@ -68,11 +68,11 @@ class JobCleanupResources(BaseModel):
     """Credential-free locations of resources to remove when deleting a job."""
 
     version: Literal[1] = 1
-    resources: list[MinioResource | TimeseriesResource]
+    resources: list[S3Resource | TimeseriesResource]
 
 
 def publish_job_cleanup_resource(
-    resource: MinioResource | TimeseriesResource,
+    resource: S3Resource | TimeseriesResource,
 ) -> None:
     """Best-effort register a cleanup resource with the orchestrator."""
     if not in_prefect_flow_context():
@@ -117,14 +117,31 @@ def publish_job_cleanup_resource(
     )
 
 
-def _build_minio_result_storage(
-    minio_url: str,
+def _s3_filesystem_settings(s3_url: str, access_key: str, secret_key: str) -> dict[str, Any]:
+    """Return s3fs settings for an S3-compatible endpoint.
+
+    Path-style addressing keeps bucket names out of hostnames, which works for internal Docker hostnames.
+
+    Returns:
+        dict[str, Any]: Settings for a Prefect ``RemoteFileSystem``.
+
+    """
+    return {
+        "key": access_key,
+        "secret": secret_key,
+        "client_kwargs": {"endpoint_url": s3_url},
+        "config_kwargs": {"s3": {"addressing_style": "path"}},
+    }
+
+
+def _build_s3_result_storage(
+    s3_url: str,
     access_key: str,
     secret_key: str,
     bucket: str = PREFECT_RESULTS_BUCKET,
     prefix: str = FLOW_RESULTS_PREFIX,
 ) -> RemoteFileSystem:
-    """Create MinIO-backed Prefect result storage block when env vars are available.
+    """Create S3-backed Prefect result storage block when env vars are available.
 
     Returns:
         RemoteFileSystem: Configured Prefect result storage block.
@@ -132,11 +149,7 @@ def _build_minio_result_storage(
     """
     return RemoteFileSystem(
         basepath=f"s3://{bucket}/{prefix}",
-        settings={
-            "key": access_key,
-            "secret": secret_key,
-            "client_kwargs": {"endpoint_url": minio_url},
-        },
+        settings=_s3_filesystem_settings(s3_url, access_key, secret_key),
     )
 
 
@@ -225,7 +238,7 @@ def load_gurobi_license() -> None:
     logging.info(f"Successfully generated {target_file}")
 
 
-def _sanitize_for_minio(value: str) -> str:
+def _sanitize_for_s3(value: str) -> str:
     """Sanitize a value for Prefect artifact keys.
 
     Returns:
@@ -237,22 +250,22 @@ def _sanitize_for_minio(value: str) -> str:
     return sanitized or "field"
 
 
-def _create_minio_presigned_url(
-    minio_block: RemoteFileSystem,
+def _create_s3_presigned_url(
+    s3_block: RemoteFileSystem,
     object_path: str,
     expires_seconds: int = 7 * 24 * 60 * 60,
 ) -> str | None:
-    """Create a presigned GET URL for an object written via minio_block.
+    """Create a presigned GET URL for an object written via s3_block.
 
     Returns:
         str | None: The generated URL or None when URL generation fails.
 
     """
     try:
-        resolved_path = minio_block._resolve_path(object_path)
-        return cast(str, minio_block.filesystem.sign(resolved_path, expiration=expires_seconds))
+        resolved_path = s3_block._resolve_path(object_path)
+        return cast(str, s3_block.filesystem.sign(resolved_path, expiration=expires_seconds))
     except Exception:
-        logging.exception("Failed to create presigned URL for MinIO object")
+        logging.exception("Failed to create presigned URL for S3 object")
         return None
 
 
@@ -281,13 +294,13 @@ def _get_required_file_extension(result: BaseModel, field_name: str) -> str:
 
 
 def load_input_esdl(
-    input_esdl_minio_path: str,
-    minio_host: str,
-    minio_port: str,
+    input_esdl_s3_path: str,
+    s3_host: str,
+    s3_port: str,
     access_key: str,
     secret_key: str,
 ) -> str:
-    """Return the input ESDL, reading it from MinIO when an `s3://` path is passed.
+    """Return the input ESDL, reading it from S3 when an `s3://` path is passed.
 
     Values that are not an `s3://` path are returned unchanged as the ESDL XML string.
 
@@ -295,53 +308,49 @@ def load_input_esdl(
         The input ESDL XML string.
 
     Raises:
-        TypeError: If the MinIO filesystem does not return bytes synchronously.
+        TypeError: If the S3 filesystem does not return bytes synchronously.
         ValueError: If the object is outside one flow-results folder.
     """
-    parsed = urlsplit(input_esdl_minio_path)
+    parsed = urlsplit(input_esdl_s3_path)
     if parsed.scheme != "s3" or not parsed.netloc or not parsed.path.strip("/"):
-        return input_esdl_minio_path
+        return input_esdl_s3_path
 
     object_path = parsed.path.lstrip("/")
     run_folder = object_path.rsplit("/", 1)[0]
     if not run_folder.startswith(f"{FLOW_RESULTS_PREFIX}/") or "/" in run_folder.removeprefix(
         f"{FLOW_RESULTS_PREFIX}/"
     ):
-        raise ValueError(f"Input ESDL MinIO path must be inside one {FLOW_RESULTS_PREFIX} folder: {object_path}")
+        raise ValueError(f"Input ESDL S3 path must be inside one {FLOW_RESULTS_PREFIX} folder: {object_path}")
 
-    minio_block = RemoteFileSystem(
+    s3_block = RemoteFileSystem(
         basepath=f"s3://{parsed.netloc}",
-        settings={
-            "key": access_key,
-            "secret": secret_key,
-            "client_kwargs": {"endpoint_url": f"http://{minio_host}:{minio_port}"},
-        },
+        settings=_s3_filesystem_settings(f"http://{s3_host}:{s3_port}", access_key, secret_key),
     )
-    input_bytes = minio_block.read_path(object_path)
+    input_bytes = s3_block.read_path(object_path)
     if not isinstance(input_bytes, bytes):
-        raise TypeError("MinIO input ESDL must be read synchronously")
+        raise TypeError("S3 input ESDL must be read synchronously")
     return input_bytes.decode("utf-8")
 
 
-def write_flow_return_artifact_to_minio(
+def write_flow_return_artifact_to_s3(
     flow_result: BaseModel,
-    minio_host: str,
-    minio_port: str,
+    s3_host: str,
+    s3_port: str,
     access_key: str,
     secret_key: str,
-    minio_external_url: str,
+    s3_external_url: str,
     flow_results_folder: str,
     flow_results_prefix: str = FLOW_RESULTS_PREFIX,
 ) -> str | None:
-    """Persist flow return fields to MinIO and publish Prefect links to those objects.
+    """Persist flow return fields to S3 and publish Prefect links to those objects.
 
-    ``minio_host`` is used for storage operations from the worker, while
-    ``minio_external_url`` is the complete URL used to generate browser-accessible URLs.
+    ``s3_host`` is used for storage operations from the worker, while
+    ``s3_external_url`` is the complete URL used to generate browser-accessible URLs.
     ``flow_results_folder`` is the folder shared with the input ESDL.
-    ``flow_results_prefix`` selects the MinIO prefix used for the flow result files.
+    ``flow_results_prefix`` selects the S3 prefix used for the flow result files.
 
     Returns:
-        str | None: Run folder path in MinIO, or None if not in flow context.
+        str | None: Run folder path in S3, or None if not in flow context.
 
     """
     if not in_prefect_flow_context():
@@ -349,20 +358,20 @@ def write_flow_return_artifact_to_minio(
 
     run_folder_path = flow_results_folder
     publish_job_cleanup_resource(
-        MinioResource(
-            host=minio_host,
-            port=int(minio_port),
+        S3Resource(
+            host=s3_host,
+            port=int(s3_port),
             path=f"{flow_results_prefix}/{run_folder_path}",
         )
     )
-    minio_block = _build_minio_result_storage(
-        f"http://{minio_host}:{minio_port}",
+    s3_block = _build_s3_result_storage(
+        f"http://{s3_host}:{s3_port}",
         access_key,
         secret_key,
         prefix=flow_results_prefix,
     )
-    external_minio_block = _build_minio_result_storage(
-        minio_external_url,
+    external_s3_block = _build_s3_result_storage(
+        s3_external_url,
         access_key,
         secret_key,
         prefix=flow_results_prefix,
@@ -372,7 +381,7 @@ def write_flow_return_artifact_to_minio(
         if field_value is None:
             continue
 
-        artifact_key = _sanitize_for_minio(f"{field_name}-{_get_flow_run_id_first_part()}")
+        artifact_key = _sanitize_for_s3(f"{field_name}-{_get_flow_run_id_first_part()}")
         field_extension = _get_required_file_extension(flow_result, field_name)
         field_object_path = f"{run_folder_path}/{artifact_key}{field_extension}"
 
@@ -383,20 +392,20 @@ def write_flow_return_artifact_to_minio(
         )
 
         try:
-            minio_block.write_path(path=field_object_path, content=field_bytes)
+            s3_block.write_path(path=field_object_path, content=field_bytes)
         except Exception:
-            logging.exception("Failed to persist flow return field '%s' to MinIO", field_name)
+            logging.exception("Failed to persist flow return field '%s' to S3", field_name)
             continue
 
-        presigned_url = _create_minio_presigned_url(external_minio_block, field_object_path)
+        presigned_url = _create_s3_presigned_url(external_s3_block, field_object_path)
         if presigned_url is None:
             continue
 
         create_link_artifact(
             link=presigned_url,
-            link_text=f"Download '{field_name}' from MinIO",
+            link_text=f"Download '{field_name}' from S3",
             key=artifact_key,
-            description=f"MinIO object: {field_object_path}",
+            description=f"S3 object: {field_object_path}",
         )
 
     return run_folder_path
@@ -668,8 +677,8 @@ def from_prefect_state_type_to_job_status(prefect_state_type: StateType) -> JobS
 
 async def get_flow_run_status_and_results(
     flow_run_id: str | UUID,
-    minio_host: str,
-    minio_port: str,
+    s3_host: str,
+    s3_port: str,
     access_key: str,
     secret_key: str,
 ) -> tuple[str, StateType, dict[str, Any], dict[str, str], dict[str, dict[str, Any]], str]:
@@ -677,10 +686,10 @@ async def get_flow_run_status_and_results(
 
     Args:
         flow_run_id: The UUID or string ID of the flow run.
-        minio_host: MinIO host for direct authenticated artifact access.
-        minio_port: MinIO port for direct authenticated artifact access.
-        access_key: MinIO access key for authenticated access.
-        secret_key: MinIO secret key for authenticated access.
+        s3_host: S3 host for direct authenticated artifact access.
+        s3_port: S3 port for direct authenticated artifact access.
+        access_key: S3 access key for authenticated access.
+        secret_key: S3 secret key for authenticated access.
 
     Returns:
         tuple[str, StateType, dict[str, Any], dict[str, str], dict[str, dict[str, Any]], str]:
@@ -718,8 +727,8 @@ async def get_flow_run_status_and_results(
                 artifact_key = artifact.key or str(artifact.id)
                 artifact_data = await _resolve_artifact_data(
                     artifact.data,
-                    minio_host=minio_host,
-                    minio_port=minio_port,
+                    s3_host=s3_host,
+                    s3_port=s3_port,
                     access_key=access_key,
                     secret_key=secret_key,
                 )
@@ -763,21 +772,21 @@ async def get_flow_run_status_and_results(
         _raise_prefect_api_error(exc)
 
 
-_MINIO_MARKDOWN_LINK_RE = re.compile(r"^\[(?P<label>.*?)\]\((?P<url>https?://[^)]+)\)$")
-_MINIO_URL_RE = re.compile(r"^['\"]?(?P<url>https?://[^'\"]+)['\"]?$")
+_S3_MARKDOWN_LINK_RE = re.compile(r"^\[(?P<label>.*?)\]\((?P<url>https?://[^)]+)\)$")
+_S3_URL_RE = re.compile(r"^['\"]?(?P<url>https?://[^'\"]+)['\"]?$")
 
 
 async def _resolve_artifact_data(
     data: object,
-    minio_host: str,
-    minio_port: str | int,
+    s3_host: str,
+    s3_port: str | int,
     access_key: str,
     secret_key: str,
 ) -> object:
-    """Resolve artifact data using authenticated MinIO access.
+    """Resolve artifact data using authenticated S3 access.
 
-    JSON strings are decoded: MinIO links are read directly without using the auth signature in the presigned URL which
-    can expire.
+    JSON strings are decoded: S3 links are read directly without using the auth signature in the presigned
+    URL, which can expire.
 
     Returns:
         object: Resolved artifact data (JSON dict, string, or raw object).
@@ -786,10 +795,10 @@ async def _resolve_artifact_data(
         return data
 
     stripped_data = data.strip()
-    markdown_match = _MINIO_MARKDOWN_LINK_RE.match(stripped_data)
+    markdown_match = _S3_MARKDOWN_LINK_RE.match(stripped_data)
     artifact_value = markdown_match.group("url") if markdown_match is not None else stripped_data
 
-    url_match = _MINIO_URL_RE.match(artifact_value)
+    url_match = _S3_URL_RE.match(artifact_value)
     if url_match is None:
         try:
             return json.loads(stripped_data)
@@ -797,11 +806,11 @@ async def _resolve_artifact_data(
             return data
 
     url = url_match.group("url")
-    minio_block = _build_minio_result_storage(f"http://{minio_host}:{minio_port}", access_key, secret_key)
-    storage_url = urlsplit(minio_block.basepath)
+    s3_block = _build_s3_result_storage(f"http://{s3_host}:{s3_port}", access_key, secret_key)
+    storage_url = urlsplit(s3_block.basepath)
     storage_path = "/".join(part for part in (storage_url.netloc, storage_url.path.strip("/")) if part)
     object_path = urlsplit(url).path.removeprefix(f"/{storage_path}/")
-    read_result = minio_block.read_path(object_path)
+    read_result = s3_block.read_path(object_path)
     downloaded_bytes = read_result if isinstance(read_result, bytes) else await read_result
     downloaded_data = downloaded_bytes.decode("utf-8")
     try:

@@ -5,7 +5,7 @@ dynamic = ["version"]
 authors = [
     { name = "Mark Vrijlandt", email = "mark.vrijlandt@tno.nl" },
     { name = "Cheng-Kai Wang", email = "cheng-kai.wang@tno.nl" },
-    { name = "Sebastiaan la Fleur", email = "sebastiaan.lafleur@tno.nl" }
+    { name = "Sebastiaan la Fleur", email = "sebastiaan.lafleur@tno.nl" },
 ]
 description = "Python implementation of the OMOTES SDK through jobs which may be submitted, receive status updates for submitted jobs or delete submitted jobs."
 readme = "README.md"
@@ -24,8 +24,9 @@ classifiers = [
 ]
 
 dependencies = [
+    "certifi>=2026.10.19",
     "prefect==3.7.3",
-    "s3fs",
+    "s3fs>=2025.10",
     "streamcapture ~= 1.2.5",
     "typing-extensions ~= 4.11",
 ]
@@ -102,4 +103,4 @@ exclude = ["justfile", ".editorconfig"]
 convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101"]  # assert statements are standard in tests
+"tests/**" = ["S101"] # assert statements are standard in tests
